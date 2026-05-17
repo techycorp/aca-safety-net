@@ -9,11 +9,14 @@ mod find;
 mod gcloud;
 mod git;
 mod heroku;
+mod infisical;
 mod kubectl;
 mod mise;
 mod parallel;
+mod pipenv;
 mod rm;
 mod sensitive_files;
+mod shadowenv;
 pub(crate) mod substitution;
 mod uv;
 mod xargs;
@@ -27,11 +30,14 @@ pub use find::analyze_find;
 pub use gcloud::{analyze_gcloud, analyze_gcloud_raw};
 pub use git::analyze_git;
 pub use heroku::analyze_heroku;
+pub use infisical::{analyze_infisical, analyze_infisical_raw};
 pub use kubectl::analyze_kubectl;
 pub use mise::{analyze_mise, analyze_mise_raw};
 pub use parallel::analyze_parallel;
+pub use pipenv::analyze_pipenv;
 pub use rm::analyze_rm;
 pub use sensitive_files::{check_git_add_sensitive, check_sensitive_path};
+pub use shadowenv::{analyze_shadowenv, analyze_shadowenv_raw};
 pub use uv::analyze_uv;
 pub use xargs::analyze_xargs;
 
@@ -60,6 +66,16 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
     // mise must run before env: `mise env` matches both regexes, and we
     // want the more specific tool-name reason rather than the generic env one.
     let decision = analyze_mise_raw(command);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    let decision = analyze_shadowenv_raw(command);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    let decision = analyze_infisical_raw(command);
     if decision.is_blocked() {
         return decision;
     }
@@ -100,8 +116,11 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
             "gcloud" => analyze_gcloud(&tokens, config),
             "uv" => analyze_uv(&tokens, config),
             "direnv" => analyze_direnv(&tokens, config),
-            "env" => analyze_env(&tokens, config),
+            "env" | "printenv" | "gprintenv" => analyze_env(&tokens, config),
+            "infisical" => analyze_infisical(&tokens, config),
             "mise" => analyze_mise(&tokens, config),
+            "pipenv" => analyze_pipenv(&tokens, config),
+            "shadowenv" => analyze_shadowenv(&tokens, config),
             _ => Decision::Allow,
         };
 

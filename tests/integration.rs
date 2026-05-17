@@ -532,11 +532,15 @@ enabled = false
 }
 
 // Generic reason strings users actually see — these come from the raw
-// analyzers in src/rules/direnv.rs, src/rules/env.rs, src/rules/mise.rs.
-// If the message text changes, these tests catch it.
+// analyzers in src/rules/direnv.rs, src/rules/env.rs, src/rules/mise.rs,
+// src/rules/shadowenv.rs, src/rules/infisical.rs. If the message text
+// changes, these tests catch it.
 const DIRENV_REASON: &str = "direnv is blocked entirely";
 const ENV_REASON: &str = "env exposes environment variables";
 const MISE_REASON: &str = "mise is blocked entirely";
+const PRINTENV_REASON: &str = "printenv dumps";
+const SHADOWENV_REASON: &str = "shadowenv loads per-directory";
+const INFISICAL_REASON: &str = "infisical";
 
 #[test]
 fn test_no_config_blocks_direnv_exec_env() {
@@ -911,6 +915,196 @@ fn test_no_config_blocks_read_direnv_cache() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("BLOCKED"));
+}
+
+// ── Tier 1: printenv / gprintenv (folded into env analyzer) ──────────────
+
+#[test]
+fn test_no_config_blocks_printenv() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"printenv"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(PRINTENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_gprintenv() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"gprintenv"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(PRINTENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_printenv_after_chain() {
+    // The case the old anchored deny rule `^\s*printenv` missed.
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"cd /tmp && printenv"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(PRINTENV_REASON));
+}
+
+// ── Tier 1: shadowenv (direnv-shape, hard block) ─────────────────────────
+
+#[test]
+fn test_no_config_blocks_shadowenv_hook() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"shadowenv hook bash"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("shadowenv hook"));
+}
+
+#[test]
+fn test_no_config_blocks_shadowenv_exec() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"shadowenv exec -- ls"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("shadowenv exec"));
+}
+
+#[test]
+fn test_no_config_blocks_shadowenv_generic() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"shadowenv help"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(SHADOWENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_read_shadowenv_dir() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Read","tool_input":{"file_path":"/proj/.shadowenv.d/000-aaa.lisp"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+// ── Tier 1: infisical (secrets-injection, hard block) ────────────────────
+
+#[test]
+fn test_no_config_blocks_infisical_run() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Bash","tool_input":{"command":"infisical run -- python script.py"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("infisical run"));
+}
+
+#[test]
+fn test_no_config_blocks_infisical_secrets() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"infisical secrets get FOO"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("infisical secrets"));
+}
+
+#[test]
+fn test_no_config_blocks_infisical_generic() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"infisical init"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(INFISICAL_REASON));
+}
+
+// ── Tier 1: pipenv (uv-shape, narrow Pipfile-bypass block) ───────────────
+
+#[test]
+fn test_no_config_blocks_pipenv_install_skip_lock() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"pipenv install --skip-lock"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("skip-lock"));
+}
+
+#[test]
+fn test_no_config_blocks_pipenv_install_ignore_pipfile() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Bash","tool_input":{"command":"pipenv install --ignore-pipfile"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("ignore-pipfile"));
+}
+
+#[test]
+fn test_no_config_blocks_pipenv_install_requirements() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Bash","tool_input":{"command":"pipenv install -r requirements.txt"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("requirements"));
+}
+
+#[test]
+fn test_no_config_allows_pipenv_install() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"pipenv install requests"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_no_config_allows_pipenv_lock() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"pipenv lock"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_no_config_allows_pipenv_run() {
+    // Documented out-of-scope: the .env auto-load only leaks via the child
+    // process doing something with the loaded vars, which is the same shape
+    // as the README "Indirect file access" limitation. Asserting allow so
+    // future readers see the deliberate choice.
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"pipenv run python -V"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .success();
 }
 
 #[test]

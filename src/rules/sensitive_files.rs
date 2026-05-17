@@ -313,4 +313,19 @@ mod tests {
         // Negative: word boundary on `\bmise/` shouldn't match `promise/foo`.
         assert!(!check_sensitive_path("promise/foo.txt", &default_config()).is_blocked());
     }
+
+    // ── shadowenv config dir ────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_blocks_shadowenv_dir() {
+        assert!(
+            check_sensitive_path("/proj/.shadowenv.d/000-aaa.lisp", &default_config()).is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_does_not_block_shadow_other() {
+        // Negative — bare `shadow.txt` shouldn't match `\.shadowenv\.d`.
+        assert!(!check_sensitive_path("shadow.txt", &default_config()).is_blocked());
+    }
 }

@@ -77,6 +77,7 @@ const DEFAULT_SENSITIVE_FILES: &[&str] = &[
     r"\.mise\b",
     r"\bmise\.toml\b",
     r"\bmise/",
+    r"\.shadowenv\.d\b",
     // Credentials
     r"credentials",
     r"secrets",
@@ -119,8 +120,9 @@ const DEFAULT_READ_COMMANDS: &[&str] = &[
 
 /// Default deny rules: (tool, pattern, reason)
 const DEFAULT_DENY_RULES: &[(&str, &str, &str)] = &[
-    // Environment exposure
-    ("Bash", r"^\s*printenv", "Exposes environment variables"),
+    // Environment exposure — `env`, `printenv`, `gprintenv` are handled by
+    // the env analyzer (src/rules/env.rs) which catches them anywhere in
+    // the command, not just anchored at start.
     ("Bash", r"^\s*set\s*$", "Exposes shell variables"),
     ("Bash", r"^\s*declare\s+-x", "Exposes exported variables"),
     ("Bash", r"^\s*export\s*$", "Exposes exported variables"),
@@ -569,7 +571,9 @@ mod tests {
         assert!(config.sensitive_files.iter().any(|p| p.contains("id_rsa")));
         assert!(config.read_commands.is_some());
         assert!(!config.deny.is_empty());
-        assert!(config.deny.iter().any(|r| r.pattern.contains("printenv")));
+        // `set` (with no args) is still a deny-rule entry; printenv moved
+        // to the env analyzer (src/rules/env.rs).
+        assert!(config.deny.iter().any(|r| r.pattern.contains("set")));
         assert!(!config.paranoid.enabled);
     }
 

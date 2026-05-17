@@ -1,11 +1,14 @@
-//! `env` analysis - blocks the env command entirely.
+//! `env` / `printenv` / `gprintenv` analysis — block commands that dump
+//! environment variables.
 //!
-//! `env` (with no command) prints every environment variable. `env` as a
-//! wrapper (`env FOO=bar cmd`) is technically safe in isolation, but the bare
-//! variant is the more dangerous case and shell already supports inline
-//! assignment (`FOO=bar cmd`) as a safer equivalent. We block both for the
-//! same reason we block direnv: the failure mode is unbounded secret exposure
-//! and there's no operationally-necessary use that lacks a safer form.
+//! `env` (with no command) and `printenv` (with or without an argument) both
+//! emit environment variables to stdout. `gprintenv` is the GNU-prefixed
+//! variant installed by `brew install coreutils`. We treat all three the
+//! same: block any invocation, including substitution and chained forms.
+//!
+//! `env FOO=bar cmd` (the wrapper form) is technically safe in isolation,
+//! but shell already supports inline assignment (`FOO=bar cmd`) as a safer
+//! equivalent, so we block the wrapper form too to keep the rule simple.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -14,21 +17,32 @@ use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
 
-/// Matches `env` as a command word. The leading character class restricts to
-/// shell positions where a command can start: start-of-string, whitespace,
-/// shell operators, `$(`, backtick, `/` for path-prefixed `/usr/bin/env`,
-/// and quote chars so quoted forms inside `$(...)` (e.g. `echo $('env')`)
-/// don't bypass the check. This deliberately avoids matching `.env`,
-/// `.env.example`, `pyenv`, etc. The trade-off is that a literal filename
-/// like `cat "env.txt"` will be blocked — acceptable given a real file
-/// named `env` is rare and the strict stance is intentional.
-static ENV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:^|[\s;&|<>(`/'"])env\b"#).unwrap());
+/// Matches `env`, `printenv`, or `gprintenv` as a command word, capturing
+/// which one in group 1. The leading character class restricts to shell
+/// positions where a command can start: start-of-string, whitespace, shell
+/// operators, `$(`, backtick, `/` for path-prefixed `/usr/bin/env`, and
+/// quote chars so quoted forms inside `$(...)` (e.g. `echo $('env')`) don't
+/// bypass the check. This deliberately avoids matching `.env`,
+/// `.env.example`, `pyenv`, etc.
+static ENV_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?:^|[\s;&|<>(`/'"])(env|g?printenv)\b"#).unwrap());
 
-const RULE: &str = "env.blocked";
-const REASON: &str =
+const ENV_RULE: &str = "env.blocked";
+const ENV_REASON: &str =
     "env exposes environment variables; use inline assignment (`FOO=bar cmd`) instead";
+const PRINTENV_RULE: &str = "printenv.blocked";
+const PRINTENV_REASON: &str = "printenv dumps environment variables to stdout";
 
-/// Per-segment dispatch: block when the command name is `env`.
+/// Pick the right (rule, reason) pair given the matched command basename.
+fn info_for(matched: &str) -> (&'static str, &'static str) {
+    match matched {
+        "printenv" | "gprintenv" => (PRINTENV_RULE, PRINTENV_REASON),
+        _ => (ENV_RULE, ENV_REASON),
+    }
+}
+
+/// Per-segment dispatch: block when the command name is `env`, `printenv`,
+/// or `gprintenv`.
 pub fn analyze_env(tokens: &[Token], _config: &CompiledConfig) -> Decision {
     let cmd = tokens.iter().find_map(|t| match t {
         Token::Word(w) => Some(w.as_str()),
@@ -40,21 +54,24 @@ pub fn analyze_env(tokens: &[Token], _config: &CompiledConfig) -> Decision {
     };
 
     let basename = cmd.rsplit('/').next().unwrap_or(cmd);
-    if basename == "env" {
-        Decision::block(RULE, REASON)
+    if matches!(basename, "env" | "printenv" | "gprintenv") {
+        let (rule, reason) = info_for(basename);
+        Decision::block(rule, reason)
     } else {
         Decision::allow()
     }
 }
 
-/// Raw-command analysis: catches `env` anywhere in the command, including
-/// inside `$(...)`, after operators, and as a path-prefixed invocation.
+/// Raw-command analysis: catches `env` / `printenv` / `gprintenv` anywhere
+/// in the command, including inside `$(...)`, after operators, and as
+/// path-prefixed invocations.
 pub fn analyze_env_raw(raw_command: &str) -> Decision {
-    if ENV_RE.is_match(raw_command) {
-        Decision::block(RULE, REASON)
-    } else {
-        Decision::allow()
-    }
+    let Some(caps) = ENV_RE.captures(raw_command) else {
+        return Decision::allow();
+    };
+    let matched = caps.get(1).map(|m| m.as_str()).unwrap_or("env");
+    let (rule, reason) = info_for(matched);
+    Decision::block(rule, reason)
 }
 
 #[cfg(test)]
@@ -178,5 +195,66 @@ mod tests {
     #[test]
     fn test_raw_bash_c_quoted() {
         assert!(analyze_env_raw(r#"bash -c "env""#).is_blocked());
+    }
+
+    // ── printenv / gprintenv variants ───────────────────────────────────────
+
+    #[test]
+    fn test_raw_printenv() {
+        assert!(analyze_env_raw("printenv").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_gprintenv() {
+        assert!(analyze_env_raw("gprintenv").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_printenv_with_arg() {
+        assert!(analyze_env_raw("printenv PATH").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_printenv_after_chain() {
+        // The case the old anchored deny rule `^\s*printenv` missed.
+        assert!(analyze_env_raw("cd /tmp && printenv").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_gprintenv_pipe() {
+        assert!(analyze_env_raw("gprintenv | grep TOKEN").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_printenv_reason() {
+        let d = analyze_env_raw("printenv");
+        let info = d.block_info().unwrap();
+        assert_eq!(info.rule, "printenv.blocked");
+        assert!(info.reason.contains("printenv"));
+    }
+
+    #[test]
+    fn test_raw_gprintenv_reason() {
+        // gprintenv uses the same rule tag and reason as printenv.
+        let d = analyze_env_raw("gprintenv FOO");
+        assert_eq!(d.block_info().unwrap().rule, "printenv.blocked");
+    }
+
+    #[test]
+    fn test_dispatch_bare_printenv() {
+        assert!(analyze_env(&tokenize("printenv"), &cfg()).is_blocked());
+    }
+
+    #[test]
+    fn test_dispatch_gprintenv_path() {
+        assert!(analyze_env(&tokenize("/opt/homebrew/bin/gprintenv"), &cfg()).is_blocked());
+    }
+
+    // Negative — make sure we don't catch substrings.
+
+    #[test]
+    fn test_raw_printenv_not_in_word() {
+        // `myprintenv` (no separator before) shouldn't match.
+        assert!(!analyze_env_raw("/usr/bin/myprintenv").is_blocked());
     }
 }
