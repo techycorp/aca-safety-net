@@ -3,6 +3,8 @@
 mod aws;
 mod azure;
 mod custom;
+mod direnv;
+mod env;
 mod find;
 mod gcloud;
 mod git;
@@ -18,6 +20,8 @@ mod xargs;
 pub use aws::analyze_aws;
 pub use azure::analyze_azure;
 pub use custom::check_custom_rules;
+pub use direnv::{analyze_direnv, analyze_direnv_raw};
+pub use env::{analyze_env, analyze_env_raw};
 pub use find::analyze_find;
 pub use gcloud::{analyze_gcloud, analyze_gcloud_raw};
 pub use git::analyze_git;
@@ -42,6 +46,16 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
     }
 
     let decision = analyze_gcloud_raw(command);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    let decision = analyze_direnv_raw(command);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    let decision = analyze_env_raw(command);
     if decision.is_blocked() {
         return decision;
     }
@@ -76,6 +90,8 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
             "az" => analyze_azure(&tokens, config),
             "gcloud" => analyze_gcloud(&tokens, config),
             "uv" => analyze_uv(&tokens, config),
+            "direnv" => analyze_direnv(&tokens, config),
+            "env" => analyze_env(&tokens, config),
             _ => Decision::Allow,
         };
 

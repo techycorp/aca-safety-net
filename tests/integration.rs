@@ -531,6 +531,182 @@ enabled = false
         .stdout(predicate::str::is_empty());
 }
 
+// Generic reason strings users actually see — these come from the raw
+// analyzers in src/rules/direnv.rs and src/rules/env.rs. If the message
+// text changes, these tests catch it (gap 4).
+const DIRENV_REASON: &str = "direnv is blocked entirely";
+const ENV_REASON: &str = "env exposes environment variables";
+
+#[test]
+fn test_no_config_blocks_direnv_exec_env() {
+    // The original leak: `direnv exec . env` dumps the loaded environment.
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"direnv exec . env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"))
+        .stderr(predicate::str::contains(DIRENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_direnv_export() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"direnv export bash"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(DIRENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_direnv_after_chain() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"cd /tmp && direnv allow"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(DIRENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_bare_env() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_env_pipe() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"env | grep TOKEN"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_env_path_form() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"/usr/bin/env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+#[test]
+fn test_no_config_allows_env_example_files() {
+    // .env regex must not collide with the env-command regex.
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"cat .env.example"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_no_config_allows_pyenv() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"pyenv versions"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .success();
+}
+
+// ── Wrapper coverage (gaps 2 & 3) ────────────────────────────────────────
+
+#[test]
+fn test_no_config_blocks_bash_c_env() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"bash -c \"env\""}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_sh_c_env_pipe() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"sh -c \"env | grep TOKEN\""}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_bash_c_direnv_export() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"bash -c \"direnv export bash\""}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(DIRENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_nohup_direnv_exec() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"nohup direnv exec . env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(DIRENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_timeout_env() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"timeout 5 env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_time_env() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"time env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(ENV_REASON));
+}
+
+// ── .direnv cache directory via Read (gap 5) ─────────────────────────────
+
+#[test]
+fn test_no_config_blocks_read_direnv_cache() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Read","tool_input":{"file_path":"/home/user/proj/.direnv/python-3.12/bin/python"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
 #[test]
 fn test_edit_pyproject_toml_asks() {
     let dir = TempDir::new().unwrap();

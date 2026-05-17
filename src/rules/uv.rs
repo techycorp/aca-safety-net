@@ -24,10 +24,9 @@ pub fn analyze_uv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
         // uv run --with <pkg> installs packages into an ephemeral environment
         // Also catches --with=pkg (equals syntax) and --with-requirements
         "run" => {
-            if words
-                .iter()
-                .any(|w| *w == "--with" || w.starts_with("--with=") || w.starts_with("--with-requirements"))
-            {
+            if words.iter().any(|w| {
+                *w == "--with" || w.starts_with("--with=") || w.starts_with("--with-requirements")
+            }) {
                 Decision::block(
                     "uv.run.with",
                     "uv run --with installs packages without modifying pyproject.toml. \

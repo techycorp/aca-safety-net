@@ -13,8 +13,8 @@ use crate::shell::{Token, split_commands, tokenize};
 
 /// Commands that print their arguments or stdin to stdout.
 static PRINT_COMMANDS: &[&str] = &[
-    "echo", "printf", "cat", "tee", "less", "more", "head", "tail",
-    "bat", "strings", "xxd", "hexdump",
+    "echo", "printf", "cat", "tee", "less", "more", "head", "tail", "bat", "strings", "xxd",
+    "hexdump",
 ];
 
 /// Matches bare variable assignments after `$(...)` has been stripped.
@@ -148,19 +148,34 @@ pub fn check_substitution_safety(
         match classify_segment(&segment.command) {
             SubstitutionContext::SafeArgument => {}
             SubstitutionContext::AsCommand => {
-                return Decision::block(rule, "command output used as a shell command exposes secret value");
+                return Decision::block(
+                    rule,
+                    "command output used as a shell command exposes secret value",
+                );
             }
             SubstitutionContext::PrintCommand => {
-                return Decision::block(rule, "command output passed to a print command exposes secret to stdout");
+                return Decision::block(
+                    rule,
+                    "command output passed to a print command exposes secret to stdout",
+                );
             }
             SubstitutionContext::Herestring => {
-                return Decision::block(rule, "command output in herestring exposes secret to stdout");
+                return Decision::block(
+                    rule,
+                    "command output in herestring exposes secret to stdout",
+                );
             }
             SubstitutionContext::VariableAssignment => {
-                return Decision::block(rule, "command output assigned to a variable will likely be exposed later");
+                return Decision::block(
+                    rule,
+                    "command output assigned to a variable will likely be exposed later",
+                );
             }
             SubstitutionContext::DangerousWrapper => {
-                return Decision::block(rule, "command inside eval/bash -c/sh -c executes secret value as shell code");
+                return Decision::block(
+                    rule,
+                    "command inside eval/bash -c/sh -c executes secret value as shell code",
+                );
             }
         }
     }

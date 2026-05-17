@@ -128,10 +128,10 @@ mod tests {
 
     #[test]
     fn test_raw_echo_secrets_access() {
-        assert!(analyze_gcloud_raw(
-            "echo $(gcloud secrets versions access latest --secret=my-secret)"
-        )
-        .is_blocked());
+        assert!(
+            analyze_gcloud_raw("echo $(gcloud secrets versions access latest --secret=my-secret)")
+                .is_blocked()
+        );
     }
 
     #[test]
@@ -141,9 +141,7 @@ mod tests {
 
     #[test]
     fn test_raw_variable_assignment() {
-        assert!(
-            analyze_gcloud_raw("TOKEN=$(gcloud auth print-access-token)").is_blocked()
-        );
+        assert!(analyze_gcloud_raw("TOKEN=$(gcloud auth print-access-token)").is_blocked());
     }
 
     #[test]

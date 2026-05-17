@@ -330,9 +330,7 @@ pub fn analyze_azure(tokens: &[Token], _config: &CompiledConfig) -> Decision {
                         }
                     }
                     "device-identity" => {
-                        if words.len() >= 6
-                            && words[4] == "connection-string"
-                            && words[5] == "show"
+                        if words.len() >= 6 && words[4] == "connection-string" && words[5] == "show"
                         {
                             Decision::block(
                                 "az.iot.device-connection-string",
@@ -459,10 +457,7 @@ pub fn analyze_azure(tokens: &[Token], _config: &CompiledConfig) -> Decision {
             if words.len() < 5 {
                 return Decision::allow();
             }
-            if words[2] == "vpn-connection"
-                && words[3] == "shared-key"
-                && words[4] == "show"
-            {
+            if words[2] == "vpn-connection" && words[3] == "shared-key" && words[4] == "show" {
                 Decision::block(
                     "az.network.vpn-shared-key",
                     "az network vpn-connection shared-key show exposes VPN pre-shared key",
@@ -810,14 +805,16 @@ mod tests {
     #[test]
     fn test_ad_sp_credential_reset() {
         let config = test_config();
-        let tokens = tokenize("az ad sp credential reset --id 00000000-0000-0000-0000-000000000000");
+        let tokens =
+            tokenize("az ad sp credential reset --id 00000000-0000-0000-0000-000000000000");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_ad_app_credential_reset() {
         let config = test_config();
-        let tokens = tokenize("az ad app credential reset --id 00000000-0000-0000-0000-000000000000");
+        let tokens =
+            tokenize("az ad app credential reset --id 00000000-0000-0000-0000-000000000000");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -845,7 +842,8 @@ mod tests {
     #[test]
     fn test_cognitiveservices_account_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az cognitiveservices account keys list --name myai --resource-group rg");
+        let tokens =
+            tokenize("az cognitiveservices account keys list --name myai --resource-group rg");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -859,28 +857,35 @@ mod tests {
     #[test]
     fn test_containerapp_secret_show() {
         let config = test_config();
-        let tokens = tokenize("az containerapp secret show --name myapp --resource-group rg --secret-name mysecret");
+        let tokens = tokenize(
+            "az containerapp secret show --name myapp --resource-group rg --secret-name mysecret",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_containerapp_secret_list_show_values() {
         let config = test_config();
-        let tokens = tokenize("az containerapp secret list --name myapp --resource-group rg --show-values");
+        let tokens =
+            tokenize("az containerapp secret list --name myapp --resource-group rg --show-values");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_containerapp_job_secret_show() {
         let config = test_config();
-        let tokens = tokenize("az containerapp job secret show --name myjob --resource-group rg --secret-name s");
+        let tokens = tokenize(
+            "az containerapp job secret show --name myjob --resource-group rg --secret-name s",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_containerapp_job_secret_list_show_values() {
         let config = test_config();
-        let tokens = tokenize("az containerapp job secret list --name myjob --resource-group rg --show-values");
+        let tokens = tokenize(
+            "az containerapp job secret list --name myjob --resource-group rg --show-values",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -901,7 +906,8 @@ mod tests {
     #[test]
     fn test_cosmosdb_list_connection_strings() {
         let config = test_config();
-        let tokens = tokenize("az cosmosdb list-connection-strings --name mydb --resource-group rg");
+        let tokens =
+            tokenize("az cosmosdb list-connection-strings --name mydb --resource-group rg");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -922,21 +928,27 @@ mod tests {
     #[test]
     fn test_eventgrid_partner_namespace_key_list() {
         let config = test_config();
-        let tokens = tokenize("az eventgrid partner namespace key list --resource-group rg --partner-namespace-name ns");
+        let tokens = tokenize(
+            "az eventgrid partner namespace key list --resource-group rg --partner-namespace-name ns",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_eventhubs_namespace_authorization_rule_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az eventhubs namespace authorization-rule keys list --resource-group rg --namespace-name ns --authorization-rule-name rule");
+        let tokens = tokenize(
+            "az eventhubs namespace authorization-rule keys list --resource-group rg --namespace-name ns --authorization-rule-name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_eventhubs_eventhub_authorization_rule_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az eventhubs eventhub authorization-rule keys list --resource-group rg --namespace-name ns --eventhub-name eh --authorization-rule-name rule");
+        let tokens = tokenize(
+            "az eventhubs eventhub authorization-rule keys list --resource-group rg --namespace-name ns --eventhub-name eh --authorization-rule-name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -950,7 +962,9 @@ mod tests {
     #[test]
     fn test_functionapp_function_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az functionapp function keys list --name myfunc --function-name fn --resource-group rg");
+        let tokens = tokenize(
+            "az functionapp function keys list --name myfunc --function-name fn --resource-group rg",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -971,14 +985,18 @@ mod tests {
     #[test]
     fn test_iot_hub_device_identity_connection_string_show() {
         let config = test_config();
-        let tokens = tokenize("az iot hub device-identity connection-string show --hub-name myhub --device-id mydev");
+        let tokens = tokenize(
+            "az iot hub device-identity connection-string show --hub-name myhub --device-id mydev",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_iot_dps_policy_show() {
         let config = test_config();
-        let tokens = tokenize("az iot dps policy show --dps-name mydps --policy-name provisioningserviceowner");
+        let tokens = tokenize(
+            "az iot dps policy show --dps-name mydps --policy-name provisioningserviceowner",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -999,21 +1017,26 @@ mod tests {
     #[test]
     fn test_keyvault_secret_download() {
         let config = test_config();
-        let tokens = tokenize("az keyvault secret download --vault-name myvault --name mysecret --file out.txt");
+        let tokens = tokenize(
+            "az keyvault secret download --vault-name myvault --name mysecret --file out.txt",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_keyvault_certificate_download() {
         let config = test_config();
-        let tokens = tokenize("az keyvault certificate download --vault-name myvault --name mycert --file cert.pem");
+        let tokens = tokenize(
+            "az keyvault certificate download --vault-name myvault --name mycert --file cert.pem",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_keyvault_key_download() {
         let config = test_config();
-        let tokens = tokenize("az keyvault key download --vault-name myvault --name mykey --file key.pem");
+        let tokens =
+            tokenize("az keyvault key download --vault-name myvault --name mykey --file key.pem");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1027,7 +1050,9 @@ mod tests {
     #[test]
     fn test_monitor_log_analytics_get_shared_keys() {
         let config = test_config();
-        let tokens = tokenize("az monitor log-analytics workspace get-shared-keys --resource-group rg --workspace-name ws");
+        let tokens = tokenize(
+            "az monitor log-analytics workspace get-shared-keys --resource-group rg --workspace-name ws",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1041,28 +1066,35 @@ mod tests {
     #[test]
     fn test_network_vpn_shared_key_show() {
         let config = test_config();
-        let tokens = tokenize("az network vpn-connection shared-key show --connection-name myconn --resource-group rg");
+        let tokens = tokenize(
+            "az network vpn-connection shared-key show --connection-name myconn --resource-group rg",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_notification_hub_authorization_rule_list_keys() {
         let config = test_config();
-        let tokens = tokenize("az notification-hub authorization-rule list-keys --resource-group rg --namespace-name ns --notification-hub-name hub --rule-name rule");
+        let tokens = tokenize(
+            "az notification-hub authorization-rule list-keys --resource-group rg --namespace-name ns --notification-hub-name hub --rule-name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_notification_hub_credential_list() {
         let config = test_config();
-        let tokens = tokenize("az notification-hub credential list --resource-group rg --namespace-name ns --notification-hub-name hub");
+        let tokens = tokenize(
+            "az notification-hub credential list --resource-group rg --namespace-name ns --notification-hub-name hub",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_postgres_flexible_server_show_connection_string() {
         let config = test_config();
-        let tokens = tokenize("az postgres flexible-server show-connection-string --server-name mydb");
+        let tokens =
+            tokenize("az postgres flexible-server show-connection-string --server-name mydb");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1090,42 +1122,52 @@ mod tests {
     #[test]
     fn test_relay_namespace_authorization_rule_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az relay namespace authorization-rule keys list --resource-group rg --namespace-name ns --name rule");
+        let tokens = tokenize(
+            "az relay namespace authorization-rule keys list --resource-group rg --namespace-name ns --name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_relay_hyco_authorization_rule_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az relay hyco authorization-rule keys list --resource-group rg --namespace-name ns --hybrid-connection-name hc --name rule");
+        let tokens = tokenize(
+            "az relay hyco authorization-rule keys list --resource-group rg --namespace-name ns --hybrid-connection-name hc --name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_search_admin_key_show() {
         let config = test_config();
-        let tokens = tokenize("az search admin-key show --service-name mysearch --resource-group rg");
+        let tokens =
+            tokenize("az search admin-key show --service-name mysearch --resource-group rg");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_search_query_key_list() {
         let config = test_config();
-        let tokens = tokenize("az search query-key list --service-name mysearch --resource-group rg");
+        let tokens =
+            tokenize("az search query-key list --service-name mysearch --resource-group rg");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_servicebus_namespace_authorization_rule_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az servicebus namespace authorization-rule keys list --resource-group rg --namespace-name ns --authorization-rule-name rule");
+        let tokens = tokenize(
+            "az servicebus namespace authorization-rule keys list --resource-group rg --namespace-name ns --authorization-rule-name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_servicebus_queue_authorization_rule_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az servicebus queue authorization-rule keys list --resource-group rg --namespace-name ns --queue-name q --authorization-rule-name rule");
+        let tokens = tokenize(
+            "az servicebus queue authorization-rule keys list --resource-group rg --namespace-name ns --queue-name q --authorization-rule-name rule",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1139,7 +1181,9 @@ mod tests {
     #[test]
     fn test_sql_db_show_connection_string() {
         let config = test_config();
-        let tokens = tokenize("az sql db show-connection-string --server myserver --name mydb --client ado.net");
+        let tokens = tokenize(
+            "az sql db show-connection-string --server myserver --name mydb --client ado.net",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1153,7 +1197,8 @@ mod tests {
     #[test]
     fn test_storage_account_keys_list() {
         let config = test_config();
-        let tokens = tokenize("az storage account keys list --account-name mystorage --resource-group rg");
+        let tokens =
+            tokenize("az storage account keys list --account-name mystorage --resource-group rg");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1167,35 +1212,45 @@ mod tests {
     #[test]
     fn test_storage_account_generate_sas() {
         let config = test_config();
-        let tokens = tokenize("az storage account generate-sas --account-name mystorage --permissions r --expiry 2025-01-01");
+        let tokens = tokenize(
+            "az storage account generate-sas --account-name mystorage --permissions r --expiry 2025-01-01",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_storage_container_generate_sas() {
         let config = test_config();
-        let tokens = tokenize("az storage container generate-sas --name mycontainer --account-name mystorage");
+        let tokens = tokenize(
+            "az storage container generate-sas --name mycontainer --account-name mystorage",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_storage_blob_generate_sas() {
         let config = test_config();
-        let tokens = tokenize("az storage blob generate-sas --container-name c --name b --account-name mystorage");
+        let tokens = tokenize(
+            "az storage blob generate-sas --container-name c --name b --account-name mystorage",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_webapp_deployment_list_publishing_profiles() {
         let config = test_config();
-        let tokens = tokenize("az webapp deployment list-publishing-profiles --name myapp --resource-group rg");
+        let tokens = tokenize(
+            "az webapp deployment list-publishing-profiles --name myapp --resource-group rg",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
     #[test]
     fn test_webapp_deployment_list_publishing_credentials() {
         let config = test_config();
-        let tokens = tokenize("az webapp deployment list-publishing-credentials --name myapp --resource-group rg");
+        let tokens = tokenize(
+            "az webapp deployment list-publishing-credentials --name myapp --resource-group rg",
+        );
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1209,7 +1264,8 @@ mod tests {
     #[test]
     fn test_webapp_config_connection_string_list() {
         let config = test_config();
-        let tokens = tokenize("az webapp config connection-string list --name myapp --resource-group rg");
+        let tokens =
+            tokenize("az webapp config connection-string list --name myapp --resource-group rg");
         assert!(analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1325,7 +1381,8 @@ mod tests {
     #[test]
     fn test_ad_app_credential_list_allowed() {
         let config = test_config();
-        let tokens = tokenize("az ad app credential list --id 00000000-0000-0000-0000-000000000000");
+        let tokens =
+            tokenize("az ad app credential list --id 00000000-0000-0000-0000-000000000000");
         assert!(!analyze_azure(&tokens, &config).is_blocked());
     }
 
@@ -1402,7 +1459,8 @@ mod tests {
     #[test]
     fn test_notification_hub_show_allowed() {
         let config = test_config();
-        let tokens = tokenize("az notification-hub show --resource-group rg --namespace-name ns --name hub");
+        let tokens =
+            tokenize("az notification-hub show --resource-group rg --namespace-name ns --name hub");
         assert!(!analyze_azure(&tokens, &config).is_blocked());
     }
 

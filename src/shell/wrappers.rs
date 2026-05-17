@@ -1,11 +1,13 @@
-//! Strip wrapper commands (sudo, env, bash -c, etc.).
+//! Strip wrapper commands (sudo, bash -c, etc.).
 
 use super::tokenizer::{Token, tokenize};
 
 /// Commands that wrap other commands.
+///
+/// `env` is intentionally excluded — it's blocked entirely by `analyze_env`,
+/// so we shouldn't peek through it to the inner command.
 const WRAPPER_COMMANDS: &[&str] = &[
-    "sudo", "doas", "su", "env", "nohup", "nice", "ionice", "timeout", "time", "strace", "ltrace",
-    "watch",
+    "sudo", "doas", "su", "nohup", "nice", "ionice", "timeout", "time", "strace", "ltrace", "watch",
 ];
 
 /// Maximum depth for recursive wrapper stripping.
@@ -15,7 +17,6 @@ const MAX_STRIP_DEPTH: usize = 5;
 ///
 /// Examples:
 /// - `sudo ls` -> `ls`
-/// - `env FOO=bar ls` -> `ls`
 /// - `bash -c "ls -la"` -> `ls -la`
 pub fn strip_wrappers(command: &str) -> String {
     strip_wrappers_recursive(command, 0)
@@ -115,17 +116,6 @@ fn handle_wrapper(tokens: &[Token], depth: usize) -> String {
                     } else {
                         start += 1; // Skip single option
                     }
-                } else {
-                    break;
-                }
-            }
-        }
-        "env" => {
-            // Skip env options and VAR=value pairs
-            while start < words.len() {
-                let w = words[start];
-                if w.starts_with('-') || w.contains('=') {
-                    start += 1;
                 } else {
                     break;
                 }
@@ -243,8 +233,9 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_env() {
-        assert_eq!(strip_wrappers("env FOO=bar ls"), "ls");
+    fn test_env_not_stripped() {
+        // `env` is intentionally not a wrapper — it's blocked entirely by analyze_env.
+        assert_eq!(strip_wrappers("env FOO=bar ls"), "env FOO=bar ls");
     }
 
     #[test]
@@ -256,7 +247,12 @@ mod tests {
     fn test_strip_nested() {
         // Nested stripping handles quotes that survive tokenization
         assert_eq!(strip_wrappers("sudo ls -la"), "ls -la");
-        assert_eq!(strip_wrappers("sudo env FOO=bar ls"), "ls");
+        // `env` is no longer stripped — sudo gets peeled off, env stays.
+        // Note: handle_wrapper's word-filter drops assignment tokens during
+        // the join, so FOO=bar doesn't survive the recurse. That's a
+        // pre-existing artifact; the security-relevant outer command name
+        // (`env`) is preserved, and analyze_env_raw matches the original.
+        assert_eq!(strip_wrappers("sudo env FOO=bar ls"), "env ls");
         // Complex nested case - bash -c with quoted command
         let result = strip_wrappers("bash -c 'ls -la'");
         assert_eq!(result, "ls -la");

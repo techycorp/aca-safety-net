@@ -71,6 +71,7 @@ const DEFAULT_SENSITIVE_FILES: &[&str] = &[
     // Environment files
     r"\.env\b",
     r"\.envrc\b",
+    r"\.direnv\b",
     // Credentials
     r"credentials",
     r"secrets",
@@ -660,15 +661,39 @@ mod tests {
         assert!(compiled.is_sensitive_path(".env.production").is_some());
         // But safe suffixes with extra segments should pass
         assert!(compiled.is_sensitive_path(".env.test.example").is_none());
-        assert!(compiled.is_sensitive_path(".env.production.sample").is_none());
-        assert!(compiled.is_sensitive_path(".env.staging.template").is_none());
+        assert!(
+            compiled
+                .is_sensitive_path(".env.production.sample")
+                .is_none()
+        );
+        assert!(
+            compiled
+                .is_sensitive_path(".env.staging.template")
+                .is_none()
+        );
         assert!(compiled.is_sensitive_path(".env.local.dist").is_none());
         // Multiple extra segments
-        assert!(compiled.is_sensitive_path(".env.test.local.example").is_none());
+        assert!(
+            compiled
+                .is_sensitive_path(".env.test.local.example")
+                .is_none()
+        );
         // With path prefix
-        assert!(compiled.is_sensitive_path("/project/.env.test.example").is_none());
+        assert!(
+            compiled
+                .is_sensitive_path("/project/.env.test.example")
+                .is_none()
+        );
         // Hyphens and underscores in segments
-        assert!(compiled.is_sensitive_path(".env.staging-v2.example").is_none());
-        assert!(compiled.is_sensitive_path(".env.test_local.sample").is_none());
+        assert!(
+            compiled
+                .is_sensitive_path(".env.staging-v2.example")
+                .is_none()
+        );
+        assert!(
+            compiled
+                .is_sensitive_path(".env.test_local.sample")
+                .is_none()
+        );
     }
 }

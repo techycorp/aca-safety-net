@@ -690,7 +690,9 @@ mod should_block {
     fn uv_run_with_package() {
         let cfg = create_config();
         cmd_with_config(&cfg)
-            .write_stdin(r#"{"tool_name":"Bash","tool_input":{"command":"uv run --with browser-cookie3"}}"#)
+            .write_stdin(
+                r#"{"tool_name":"Bash","tool_input":{"command":"uv run --with browser-cookie3"}}"#,
+            )
             .assert()
             .code(2);
     }

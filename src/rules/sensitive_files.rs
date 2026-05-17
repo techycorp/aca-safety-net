@@ -3,8 +3,7 @@
 use crate::config::CompiledConfig;
 use crate::decision::{BlockInfo, Decision};
 
-const ENV_TIP: &str =
-    "Tip: .env(.*).(example|sample|template|dist) are allowed";
+const ENV_TIP: &str = "Tip: .env(.*).(example|sample|template|dist) are allowed";
 
 /// Check if a file path matches sensitive patterns.
 pub fn check_sensitive_path(path: &str, config: &CompiledConfig) -> Decision {
@@ -126,7 +125,12 @@ mod tests {
         let config = test_config();
         let decision = check_sensitive_path(".env", &config);
         let info = decision.block_info().unwrap();
-        assert!(info.details.as_ref().unwrap().contains("example|sample|template|dist"));
+        assert!(
+            info.details
+                .as_ref()
+                .unwrap()
+                .contains("example|sample|template|dist")
+        );
     }
 
     #[test]
@@ -205,5 +209,39 @@ mod tests {
         let config = test_config();
         let decision = check_git_add_sensitive(&[".env.test"], &config);
         assert!(decision.is_blocked());
+    }
+
+    // ── .direnv cache directory (gap 5) ─────────────────────────────────────
+
+    fn default_config() -> CompiledConfig {
+        Config::default().compile().unwrap()
+    }
+
+    #[test]
+    fn test_default_blocks_direnv_dir() {
+        assert!(check_sensitive_path(".direnv", &default_config()).is_blocked());
+    }
+
+    #[test]
+    fn test_default_blocks_direnv_cache_file() {
+        assert!(
+            check_sensitive_path(".direnv/python-3.12/bin/python", &default_config()).is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_blocks_nested_direnv() {
+        assert!(
+            check_sensitive_path("/home/user/proj/.direnv/cache/foo", &default_config())
+                .is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_does_not_block_direnvrc() {
+        // `\b` after direnv prevents matching `.direnvrc` — confirms the
+        // word boundary is doing its job (no such file exists in practice,
+        // but the pattern shouldn't over-match).
+        assert!(!check_sensitive_path(".direnvrc", &default_config()).is_blocked());
     }
 }
