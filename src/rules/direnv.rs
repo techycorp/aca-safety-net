@@ -13,7 +13,37 @@ use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
 
-static DIRENV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bdirenv\b").unwrap());
+/// Matches the first `direnv` word in a command, optionally capturing the
+/// next identifier-like token as the subcommand. The capture lets the raw
+/// analyzer surface the same subcommand-specific reason that the
+/// per-segment dispatch would have used. The character class is limited to
+/// `[A-Za-z0-9_-]` so that trailing shell metacharacters (quotes, parens,
+/// pipes) don't end up glued onto the captured subcommand in contexts like
+/// `bash -c "direnv export bash"` or `echo $(direnv export bash)`.
+static DIRENV_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\bdirenv\b(?:\s+([A-Za-z0-9_-]+))?").unwrap());
+
+const GENERIC_REASON: &str = "direnv is blocked entirely because .envrc routinely contains secrets";
+
+/// Shared subcommand-to-(rule, reason) lookup used by both the per-segment
+/// dispatch and the raw analyzer.
+fn direnv_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
+    match subcommand {
+        "exec" => (
+            "direnv.exec",
+            "direnv exec loads .envrc and runs a command in that environment, exposing secrets",
+        ),
+        "export" => (
+            "direnv.export",
+            "direnv export emits all loaded environment variables as shell code",
+        ),
+        "dump" => (
+            "direnv.dump",
+            "direnv dump emits the entire loaded environment",
+        ),
+        _ => ("direnv.blocked", GENERIC_REASON),
+    }
+}
 
 /// Per-segment dispatch: block any `direnv ...` invocation.
 pub fn analyze_direnv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
@@ -30,26 +60,7 @@ pub fn analyze_direnv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
     }
 
     let subcommand = words.get(1).copied().unwrap_or("");
-
-    let (rule, reason) = match subcommand {
-        "exec" => (
-            "direnv.exec",
-            "direnv exec loads .envrc and runs a command in that environment, exposing secrets",
-        ),
-        "export" => (
-            "direnv.export",
-            "direnv export emits all loaded environment variables as shell code",
-        ),
-        "dump" => (
-            "direnv.dump",
-            "direnv dump emits the entire loaded environment",
-        ),
-        _ => (
-            "direnv.blocked",
-            "direnv is blocked entirely because .envrc routinely contains secrets",
-        ),
-    };
-
+    let (rule, reason) = direnv_subcommand_info(subcommand);
     Decision::block(rule, reason)
 }
 
@@ -57,15 +68,19 @@ pub fn analyze_direnv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
 /// inside `$(...)` substitutions and after operators. We deliberately accept
 /// false positives on the literal word "direnv" appearing in strings or
 /// comments — direnv is too sensitive to allow case-by-case exceptions.
+///
+/// When the next token after `direnv` is a recognized subcommand, the raw
+/// analyzer returns the same specific reason the dispatch would have used.
+/// In substitution contexts where the next token includes trailing shell
+/// metacharacters (e.g. `direnv export bash)` inside `$(...)`), the capture
+/// won't match any subcommand arm and we fall back to the generic reason.
 pub fn analyze_direnv_raw(raw_command: &str) -> Decision {
-    if DIRENV_RE.is_match(raw_command) {
-        Decision::block(
-            "direnv.blocked",
-            "direnv is blocked entirely because .envrc routinely contains secrets",
-        )
-    } else {
-        Decision::allow()
-    }
+    let Some(caps) = DIRENV_RE.captures(raw_command) else {
+        return Decision::allow();
+    };
+    let subcommand = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+    let (rule, reason) = direnv_subcommand_info(subcommand);
+    Decision::block(rule, reason)
 }
 
 #[cfg(test)]
@@ -204,5 +219,45 @@ mod tests {
     #[test]
     fn test_raw_path_invocation() {
         assert!(analyze_direnv_raw("/usr/local/bin/direnv exec . env").is_blocked());
+    }
+
+    // ── Quoting / substitution edge cases ───────────────────────────────────
+
+    #[test]
+    fn test_raw_backtick_substitution() {
+        assert!(analyze_direnv_raw("echo `direnv export bash`").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_single_quoted_in_substitution() {
+        // Single-quoted form inside $() — word boundary still matches because
+        // `'` is a non-word char.
+        assert!(analyze_direnv_raw("echo $('direnv export bash')").is_blocked());
+    }
+
+    // ── Subcommand reason surfaces from raw layer ───────────────────────────
+
+    #[test]
+    fn test_raw_exec_returns_specific_reason() {
+        let d = analyze_direnv_raw("direnv exec . env");
+        assert_eq!(d.block_info().unwrap().rule, "direnv.exec");
+    }
+
+    #[test]
+    fn test_raw_export_returns_specific_reason() {
+        let d = analyze_direnv_raw("direnv export bash");
+        assert_eq!(d.block_info().unwrap().rule, "direnv.export");
+    }
+
+    #[test]
+    fn test_raw_bare_returns_generic_reason() {
+        let d = analyze_direnv_raw("direnv");
+        assert_eq!(d.block_info().unwrap().rule, "direnv.blocked");
+    }
+
+    #[test]
+    fn test_raw_unknown_subcommand_returns_generic() {
+        let d = analyze_direnv_raw("direnv allow");
+        assert_eq!(d.block_info().unwrap().rule, "direnv.blocked");
     }
 }

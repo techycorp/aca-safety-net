@@ -10,6 +10,7 @@ mod gcloud;
 mod git;
 mod heroku;
 mod kubectl;
+mod mise;
 mod parallel;
 mod rm;
 mod sensitive_files;
@@ -27,6 +28,7 @@ pub use gcloud::{analyze_gcloud, analyze_gcloud_raw};
 pub use git::analyze_git;
 pub use heroku::analyze_heroku;
 pub use kubectl::analyze_kubectl;
+pub use mise::{analyze_mise, analyze_mise_raw};
 pub use parallel::analyze_parallel;
 pub use rm::analyze_rm;
 pub use sensitive_files::{check_git_add_sensitive, check_sensitive_path};
@@ -51,6 +53,13 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
     }
 
     let decision = analyze_direnv_raw(command);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    // mise must run before env: `mise env` matches both regexes, and we
+    // want the more specific tool-name reason rather than the generic env one.
+    let decision = analyze_mise_raw(command);
     if decision.is_blocked() {
         return decision;
     }
@@ -92,6 +101,7 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
             "uv" => analyze_uv(&tokens, config),
             "direnv" => analyze_direnv(&tokens, config),
             "env" => analyze_env(&tokens, config),
+            "mise" => analyze_mise(&tokens, config),
             _ => Decision::Allow,
         };
 

@@ -72,6 +72,11 @@ const DEFAULT_SENSITIVE_FILES: &[&str] = &[
     r"\.env\b",
     r"\.envrc\b",
     r"\.direnv\b",
+    r"\bdirenvrc\b",
+    r"\bdirenv/",
+    r"\.mise\b",
+    r"\bmise\.toml\b",
+    r"\bmise/",
     // Credentials
     r"credentials",
     r"secrets",

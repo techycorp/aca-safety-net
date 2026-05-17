@@ -532,14 +532,16 @@ enabled = false
 }
 
 // Generic reason strings users actually see — these come from the raw
-// analyzers in src/rules/direnv.rs and src/rules/env.rs. If the message
-// text changes, these tests catch it (gap 4).
+// analyzers in src/rules/direnv.rs, src/rules/env.rs, src/rules/mise.rs.
+// If the message text changes, these tests catch it.
 const DIRENV_REASON: &str = "direnv is blocked entirely";
 const ENV_REASON: &str = "env exposes environment variables";
+const MISE_REASON: &str = "mise is blocked entirely";
 
 #[test]
 fn test_no_config_blocks_direnv_exec_env() {
     // The original leak: `direnv exec . env` dumps the loaded environment.
+    // Raw analyzer surfaces the subcommand-specific reason for `exec`.
     let dir = TempDir::new().unwrap();
     let input = r#"{"tool_name":"Bash","tool_input":{"command":"direnv exec . env"}}"#;
     cmd_without_config(&dir)
@@ -547,7 +549,7 @@ fn test_no_config_blocks_direnv_exec_env() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("BLOCKED"))
-        .stderr(predicate::str::contains(DIRENV_REASON));
+        .stderr(predicate::str::contains("direnv exec loads .envrc"));
 }
 
 #[test]
@@ -558,11 +560,13 @@ fn test_no_config_blocks_direnv_export() {
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains(DIRENV_REASON));
+        .stderr(predicate::str::contains("direnv export emits"));
 }
 
 #[test]
 fn test_no_config_blocks_direnv_after_chain() {
+    // `allow` isn't a recognized subcommand for reason-specialization, so
+    // we still get the generic direnv reason.
     let dir = TempDir::new().unwrap();
     let input = r#"{"tool_name":"Bash","tool_input":{"command":"cd /tmp && direnv allow"}}"#;
     cmd_without_config(&dir)
@@ -658,7 +662,7 @@ fn test_no_config_blocks_bash_c_direnv_export() {
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains(DIRENV_REASON));
+        .stderr(predicate::str::contains("direnv export emits"));
 }
 
 #[test]
@@ -669,7 +673,7 @@ fn test_no_config_blocks_nohup_direnv_exec() {
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains(DIRENV_REASON));
+        .stderr(predicate::str::contains("direnv exec loads .envrc"));
 }
 
 #[test]
@@ -692,6 +696,208 @@ fn test_no_config_blocks_time_env() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(ENV_REASON));
+}
+
+// ── mise (same model as direnv) ──────────────────────────────────────────
+
+#[test]
+fn test_no_config_blocks_mise_env() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise env dumps"));
+}
+
+#[test]
+fn test_no_config_blocks_mise_hook_env() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise hook-env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise hook-env emits"));
+}
+
+#[test]
+fn test_no_config_blocks_mise_exec() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise exec -- printenv"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise exec loads .mise.toml"));
+}
+
+#[test]
+fn test_no_config_blocks_mise_after_chain() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"cd /tmp && mise activate bash"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise activate emits"));
+}
+
+#[test]
+fn test_no_config_blocks_bash_c_mise() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"bash -c \"mise env\""}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise env dumps"));
+}
+
+#[test]
+fn test_no_config_blocks_read_mise_toml() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Read","tool_input":{"file_path":"/home/user/proj/.mise.toml"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+// ── Catch-all subcommand still hits generic reason ──────────────────────
+
+#[test]
+fn test_no_config_blocks_mise_install_generic() {
+    // `install` isn't a recognized subcommand for reason-specialization,
+    // so the catch-all generic reason fires.
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise install"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(MISE_REASON));
+}
+
+// ── git add of sensitive configs ────────────────────────────────────────
+
+#[test]
+fn test_no_config_blocks_git_add_envrc() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"git add .envrc"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+#[test]
+fn test_no_config_blocks_git_add_global_direnvrc() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"git add /home/u/.config/direnv/direnvrc"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+#[test]
+fn test_no_config_blocks_git_add_mise_toml() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"git add .mise.toml"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+#[test]
+fn test_no_config_blocks_git_add_mise_no_dot() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"git add mise.toml"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+#[test]
+fn test_no_config_blocks_git_add_mise_global() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Bash","tool_input":{"command":"git add .config/mise/config.toml"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+// ── Wrapper coverage for mise + direnv ──────────────────────────────────
+
+#[test]
+fn test_no_config_blocks_timeout_mise() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"timeout 5 mise env"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise env dumps"));
+}
+
+#[test]
+fn test_no_config_blocks_nohup_mise() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"nohup mise activate bash"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise activate emits"));
+}
+
+#[test]
+fn test_no_config_blocks_timeout_direnv() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"timeout 5 direnv allow"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(DIRENV_REASON));
+}
+
+// ── Read on global config locations ─────────────────────────────────────
+
+#[test]
+fn test_no_config_blocks_read_global_direnvrc() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Read","tool_input":{"file_path":"/home/u/.config/direnv/direnvrc"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+#[test]
+fn test_no_config_blocks_read_mise_global_config() {
+    let dir = TempDir::new().unwrap();
+    let input =
+        r#"{"tool_name":"Read","tool_input":{"file_path":"/home/u/.config/mise/config.toml"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
 }
 
 // ── .direnv cache directory via Read (gap 5) ─────────────────────────────

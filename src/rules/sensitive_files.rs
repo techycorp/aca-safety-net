@@ -238,10 +238,79 @@ mod tests {
     }
 
     #[test]
-    fn test_default_does_not_block_direnvrc() {
-        // `\b` after direnv prevents matching `.direnvrc` — confirms the
-        // word boundary is doing its job (no such file exists in practice,
-        // but the pattern shouldn't over-match).
-        assert!(!check_sensitive_path(".direnvrc", &default_config()).is_blocked());
+    fn test_default_blocks_dot_direnvrc() {
+        // `\bdirenvrc\b` is intentionally added so the rarely-seen
+        // dotted variant `.direnvrc` is also caught — the leading `.`
+        // is a non-word char so the boundary holds.
+        assert!(check_sensitive_path(".direnvrc", &default_config()).is_blocked());
+    }
+
+    // ── .mise config + cache ────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_blocks_mise_toml() {
+        assert!(check_sensitive_path(".mise.toml", &default_config()).is_blocked());
+    }
+
+    #[test]
+    fn test_default_blocks_mise_local_toml() {
+        assert!(check_sensitive_path(".mise.local.toml", &default_config()).is_blocked());
+    }
+
+    #[test]
+    fn test_default_blocks_mise_cache_file() {
+        assert!(check_sensitive_path(".mise/cache/foo", &default_config()).is_blocked());
+    }
+
+    // ── Global / no-dot config locations ────────────────────────────────────
+
+    #[test]
+    fn test_default_blocks_mise_toml_no_dot() {
+        // mise also accepts `mise.toml` (no leading dot) as project config.
+        assert!(check_sensitive_path("mise.toml", &default_config()).is_blocked());
+    }
+
+    #[test]
+    fn test_default_blocks_mise_global_config() {
+        assert!(
+            check_sensitive_path("/home/u/.config/mise/config.toml", &default_config())
+                .is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_blocks_mise_conf_d() {
+        assert!(
+            check_sensitive_path("/home/u/.config/mise/conf.d/extra.toml", &default_config())
+                .is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_blocks_global_direnvrc() {
+        assert!(
+            check_sensitive_path("/home/u/.config/direnv/direnvrc", &default_config()).is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_blocks_direnv_lib() {
+        assert!(
+            check_sensitive_path("/home/u/.config/direnv/lib/foo.sh", &default_config())
+                .is_blocked()
+        );
+    }
+
+    #[test]
+    fn test_default_does_not_block_promise_toml() {
+        // Negative: word boundary on `\bmise\.toml\b` shouldn't match
+        // a file called `promise.toml` (word chars before `mise`).
+        assert!(!check_sensitive_path("promise.toml", &default_config()).is_blocked());
+    }
+
+    #[test]
+    fn test_default_does_not_block_promise_dir() {
+        // Negative: word boundary on `\bmise/` shouldn't match `promise/foo`.
+        assert!(!check_sensitive_path("promise/foo.txt", &default_config()).is_blocked());
     }
 }
