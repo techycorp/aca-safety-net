@@ -1,21 +1,32 @@
 //! Sensitive file and secrets detection.
 
-use crate::config::CompiledConfig;
+use crate::config::{CompiledConfig, SensitivePattern};
 use crate::decision::{BlockInfo, Decision};
 
-const ENV_TIP: &str = "Tip: .env(.*).(example|sample|template|dist) are allowed";
+const ENV_TIP: &str = "Tip: .env(.*).(example|sample|template|dist) are allowed. \
+    If env files hold no secrets, the user can set `[sensitive_groups] env_files = false` \
+    in their aca-safety-net user config";
+
+/// Build a block for a sensitive pattern match. The rule ID carries the
+/// pattern's group so users can see which toggle applies.
+pub fn sensitive_block(rule_prefix: &str, action: &str, pattern: &SensitivePattern) -> Decision {
+    let mut block = BlockInfo::new(
+        format!("{}.{}", rule_prefix, pattern.group),
+        format!(
+            "{} sensitive file matching '{}' (group '{}')",
+            action, pattern.source, pattern.group
+        ),
+    );
+    if pattern.group == "env_files" {
+        block = block.with_details(ENV_TIP);
+    }
+    Decision::Block(block)
+}
 
 /// Check if a file path matches sensitive patterns.
 pub fn check_sensitive_path(path: &str, config: &CompiledConfig) -> Decision {
     if let Some(pattern) = config.is_sensitive_path(path) {
-        let mut block = BlockInfo::new(
-            "secrets.sensitive_file",
-            format!("access to sensitive file matching '{}'", pattern),
-        );
-        if pattern.contains(r"\.env") {
-            block = block.with_details(ENV_TIP);
-        }
-        return Decision::Block(block);
+        return sensitive_block("secrets.sensitive_file", "access to", pattern);
     }
     Decision::allow()
 }
@@ -28,14 +39,7 @@ pub fn check_git_add_sensitive(paths: &[&str], config: &CompiledConfig) -> Decis
 
     for path in paths {
         if let Some(pattern) = config.is_sensitive_path(path) {
-            let mut block = BlockInfo::new(
-                "git.add.sensitive",
-                format!("git add on sensitive file matching '{}'", pattern),
-            );
-            if pattern.contains(r"\.env") {
-                block = block.with_details(ENV_TIP);
-            }
-            return Decision::Block(block);
+            return sensitive_block("git.add.sensitive", "git add on", pattern);
         }
     }
 

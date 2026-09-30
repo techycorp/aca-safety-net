@@ -39,6 +39,9 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS; // Fail-open on config error
         }
     };
+    for warning in &compiled.warnings {
+        eprintln!("aca-safety-net config warning: {}", warning);
+    }
 
     // Analyze based on tool type
     let decision = match hook_input.tool_name.as_str() {

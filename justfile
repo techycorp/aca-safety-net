@@ -55,9 +55,13 @@ install: release test
 	mkdir -p ~/.local/bin
 	cp target/release/aca-safety-net ~/.local/bin/
 	mkdir -p ~/.config/aca-safety-net
-	cp config.toml ~/.config/aca-safety-net/config.toml
 	@echo "Installed ~/.local/bin/aca-safety-net"
-	@echo "Installed ~/.config/aca-safety-net/config.toml"
+	@if [ -f ~/.config/aca-safety-net/config.toml ]; then \
+		echo "Kept existing ~/.config/aca-safety-net/config.toml (see config.toml for new options)"; \
+	else \
+		cp config.toml ~/.config/aca-safety-net/config.toml; \
+		echo "Installed ~/.config/aca-safety-net/config.toml"; \
+	fi
 
 # Uninstall binary and config
 uninstall:

@@ -13,6 +13,10 @@ use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
 
+use super::tool_gate;
+
+const TOOL: &str = "shadowenv";
+
 /// Matches the first `shadowenv` word in a command, optionally capturing the
 /// next identifier-like token as the subcommand. The character class is
 /// limited to `[A-Za-z0-9_-]` so trailing shell metacharacters in
@@ -43,8 +47,9 @@ fn shadowenv_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Per-segment dispatch: block any `shadowenv ...` invocation.
-pub fn analyze_shadowenv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
+/// Per-segment dispatch: block any `shadowenv ...` invocation not allowed by
+/// `[tools.shadowenv]`.
+pub fn analyze_shadowenv(tokens: &[Token], config: &CompiledConfig) -> Decision {
     let words: Vec<&str> = tokens
         .iter()
         .filter_map(|t| match t {
@@ -62,20 +67,25 @@ pub fn analyze_shadowenv(tokens: &[Token], _config: &CompiledConfig) -> Decision
         return Decision::allow();
     }
 
+    if tool_gate::allows(TOOL, tool_gate::segment_subcommand(&words), config) {
+        return Decision::allow();
+    }
     let subcommand = words.get(1).copied().unwrap_or("");
     let (rule, reason) = shadowenv_subcommand_info(subcommand);
     Decision::block(rule, reason)
 }
 
 /// Raw-command analysis: catches `shadowenv` anywhere in the command,
-/// including inside `$(...)` and after operators.
-pub fn analyze_shadowenv_raw(raw_command: &str) -> Decision {
-    let Some(caps) = SHADOWENV_RE.captures(raw_command) else {
-        return Decision::allow();
-    };
-    let subcommand = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-    let (rule, reason) = shadowenv_subcommand_info(subcommand);
-    Decision::block(rule, reason)
+/// including inside `$(...)` and after operators. Every occurrence must be
+/// allowed by `[tools.shadowenv]` for the command to pass.
+pub fn analyze_shadowenv_raw(raw_command: &str, config: &CompiledConfig) -> Decision {
+    for occ in tool_gate::raw_occurrences(&SHADOWENV_RE, raw_command) {
+        if !tool_gate::allows(TOOL, occ.clean, config) {
+            let (rule, reason) = shadowenv_subcommand_info(occ.captured.unwrap_or(""));
+            return Decision::block(rule, reason);
+        }
+    }
+    Decision::allow()
 }
 
 #[cfg(test)]
@@ -86,6 +96,18 @@ mod tests {
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
+    }
+
+    #[test]
+    fn test_secretless_profile_allows() {
+        let c = Config {
+            profile: Some("secretless".to_string()),
+            ..Default::default()
+        }
+        .compile()
+        .unwrap();
+        assert!(!analyze_shadowenv(&tokenize("shadowenv trust"), &c).is_blocked());
+        assert!(!analyze_shadowenv_raw(r#"eval "$(shadowenv hook bash)""#, &c).is_blocked());
     }
 
     // ── Per-segment dispatch ────────────────────────────────────────────────
@@ -156,32 +178,32 @@ mod tests {
 
     #[test]
     fn test_raw_standalone() {
-        assert!(analyze_shadowenv_raw("shadowenv hook bash").is_blocked());
+        assert!(analyze_shadowenv_raw("shadowenv hook bash", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_eval_substitution() {
-        assert!(analyze_shadowenv_raw(r#"eval "$(shadowenv hook bash)""#).is_blocked());
+        assert!(analyze_shadowenv_raw(r#"eval "$(shadowenv hook bash)""#, &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_after_and() {
-        assert!(analyze_shadowenv_raw("cd /tmp && shadowenv exec env").is_blocked());
+        assert!(analyze_shadowenv_raw("cd /tmp && shadowenv exec env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_bash_c_quoted() {
-        assert!(analyze_shadowenv_raw(r#"bash -c "shadowenv hook bash""#).is_blocked());
+        assert!(analyze_shadowenv_raw(r#"bash -c "shadowenv hook bash""#, &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_unrelated() {
-        assert!(!analyze_shadowenv_raw("ls -la").is_blocked());
+        assert!(!analyze_shadowenv_raw("ls -la", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_substring_safe() {
         // "shadow" alone isn't shadowenv.
-        assert!(!analyze_shadowenv_raw("echo shadow ban").is_blocked());
+        assert!(!analyze_shadowenv_raw("echo shadow ban", &cfg()).is_blocked());
     }
 }

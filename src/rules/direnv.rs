@@ -13,6 +13,10 @@ use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
 
+use super::tool_gate;
+
+const TOOL: &str = "direnv";
+
 /// Matches the first `direnv` word in a command, optionally capturing the
 /// next identifier-like token as the subcommand. The capture lets the raw
 /// analyzer surface the same subcommand-specific reason that the
@@ -45,8 +49,9 @@ fn direnv_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Per-segment dispatch: block any `direnv ...` invocation.
-pub fn analyze_direnv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
+/// Per-segment dispatch: block any `direnv ...` invocation not allowed by
+/// `[tools.direnv]`.
+pub fn analyze_direnv(tokens: &[Token], config: &CompiledConfig) -> Decision {
     let words: Vec<&str> = tokens
         .iter()
         .filter_map(|t| match t {
@@ -59,6 +64,9 @@ pub fn analyze_direnv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
         return Decision::allow();
     }
 
+    if tool_gate::allows(TOOL, tool_gate::segment_subcommand(&words), config) {
+        return Decision::allow();
+    }
     let subcommand = words.get(1).copied().unwrap_or("");
     let (rule, reason) = direnv_subcommand_info(subcommand);
     Decision::block(rule, reason)
@@ -74,13 +82,16 @@ pub fn analyze_direnv(tokens: &[Token], _config: &CompiledConfig) -> Decision {
 /// In substitution contexts where the next token includes trailing shell
 /// metacharacters (e.g. `direnv export bash)` inside `$(...)`), the capture
 /// won't match any subcommand arm and we fall back to the generic reason.
-pub fn analyze_direnv_raw(raw_command: &str) -> Decision {
-    let Some(caps) = DIRENV_RE.captures(raw_command) else {
-        return Decision::allow();
-    };
-    let subcommand = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-    let (rule, reason) = direnv_subcommand_info(subcommand);
-    Decision::block(rule, reason)
+///
+/// Every occurrence must be allowed by `[tools.direnv]` for the command to pass.
+pub fn analyze_direnv_raw(raw_command: &str, config: &CompiledConfig) -> Decision {
+    for occ in tool_gate::raw_occurrences(&DIRENV_RE, raw_command) {
+        if !tool_gate::allows(TOOL, occ.clean, config) {
+            let (rule, reason) = direnv_subcommand_info(occ.captured.unwrap_or(""));
+            return Decision::block(rule, reason);
+        }
+    }
+    Decision::allow()
 }
 
 #[cfg(test)]
@@ -91,6 +102,37 @@ mod tests {
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
+    }
+
+    #[test]
+    fn test_disabled_allows_segment_and_raw() {
+        let mut config = Config::default();
+        config.tools.insert(
+            "direnv".to_string(),
+            crate::config::ToolConfig {
+                enabled: false,
+                allow_subcommands: vec![],
+            },
+        );
+        let c = config.compile().unwrap();
+        assert!(!analyze_direnv(&tokenize("direnv allow"), &c).is_blocked());
+        assert!(!analyze_direnv_raw(r#"eval "$(direnv hook zsh)""#, &c).is_blocked());
+    }
+
+    #[test]
+    fn test_allowlisted_subcommand() {
+        let mut config = Config::default();
+        config.tools.insert(
+            "direnv".to_string(),
+            crate::config::ToolConfig {
+                enabled: true,
+                allow_subcommands: vec!["allow".to_string()],
+            },
+        );
+        let c = config.compile().unwrap();
+        assert!(!analyze_direnv(&tokenize("direnv allow"), &c).is_blocked());
+        assert!(!analyze_direnv_raw("direnv allow", &c).is_blocked());
+        assert!(analyze_direnv_raw("direnv allow && direnv export bash", &c).is_blocked());
     }
 
     // ── Per-segment dispatch ────────────────────────────────────────────────
@@ -182,82 +224,82 @@ mod tests {
 
     #[test]
     fn test_raw_standalone() {
-        assert!(analyze_direnv_raw("direnv exec . env").is_blocked());
+        assert!(analyze_direnv_raw("direnv exec . env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_echo_substitution() {
-        assert!(analyze_direnv_raw("echo $(direnv export bash)").is_blocked());
+        assert!(analyze_direnv_raw("echo $(direnv export bash)", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_variable_assignment() {
-        assert!(analyze_direnv_raw("ENV_BLOB=$(direnv dump)").is_blocked());
+        assert!(analyze_direnv_raw("ENV_BLOB=$(direnv dump)", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_eval_substitution() {
-        assert!(analyze_direnv_raw(r#"eval "$(direnv export bash)""#).is_blocked());
+        assert!(analyze_direnv_raw(r#"eval "$(direnv export bash)""#, &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_after_and() {
-        assert!(analyze_direnv_raw("cd /tmp && direnv exec . env").is_blocked());
+        assert!(analyze_direnv_raw("cd /tmp && direnv exec . env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_unrelated() {
-        assert!(!analyze_direnv_raw("ls -la").is_blocked());
+        assert!(!analyze_direnv_raw("ls -la", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_safe_argument_still_blocked() {
         // Even argument-use of direnv is blocked — no case-by-case exceptions.
-        assert!(analyze_direnv_raw("some-cmd --opt $(direnv export bash)").is_blocked());
+        assert!(analyze_direnv_raw("some-cmd --opt $(direnv export bash)", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_path_invocation() {
-        assert!(analyze_direnv_raw("/usr/local/bin/direnv exec . env").is_blocked());
+        assert!(analyze_direnv_raw("/usr/local/bin/direnv exec . env", &cfg()).is_blocked());
     }
 
     // ── Quoting / substitution edge cases ───────────────────────────────────
 
     #[test]
     fn test_raw_backtick_substitution() {
-        assert!(analyze_direnv_raw("echo `direnv export bash`").is_blocked());
+        assert!(analyze_direnv_raw("echo `direnv export bash`", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_single_quoted_in_substitution() {
         // Single-quoted form inside $() — word boundary still matches because
         // `'` is a non-word char.
-        assert!(analyze_direnv_raw("echo $('direnv export bash')").is_blocked());
+        assert!(analyze_direnv_raw("echo $('direnv export bash')", &cfg()).is_blocked());
     }
 
     // ── Subcommand reason surfaces from raw layer ───────────────────────────
 
     #[test]
     fn test_raw_exec_returns_specific_reason() {
-        let d = analyze_direnv_raw("direnv exec . env");
+        let d = analyze_direnv_raw("direnv exec . env", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.exec");
     }
 
     #[test]
     fn test_raw_export_returns_specific_reason() {
-        let d = analyze_direnv_raw("direnv export bash");
+        let d = analyze_direnv_raw("direnv export bash", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.export");
     }
 
     #[test]
     fn test_raw_bare_returns_generic_reason() {
-        let d = analyze_direnv_raw("direnv");
+        let d = analyze_direnv_raw("direnv", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.blocked");
     }
 
     #[test]
     fn test_raw_unknown_subcommand_returns_generic() {
-        let d = analyze_direnv_raw("direnv allow");
+        let d = analyze_direnv_raw("direnv allow", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.blocked");
     }
 }

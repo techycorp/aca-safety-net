@@ -63,9 +63,19 @@ Add to `~/.claude/settings.json`:
 
 The following protections are always active:
 
-- **Sensitive files**: `.env`, `.envrc`, `credentials`, `secrets`, `.netrc`, `.npmrc`, `.pypirc`, `.pem`, `.key`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `.git-credentials`, `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`, `_history`, `.bash_history`, `.zsh_history`
+- **Sensitive files**, in toggleable groups:
+  - `env_files`: `.env`, `.envrc`
+  - `direnv`: `.direnv/`, `direnvrc`, `~/.config/direnv/`
+  - `mise`: `.mise*`, `mise.toml`, `~/.config/mise/`
+  - `shadowenv`: `.shadowenv.d/`
+  - `credentials`: `credentials`, `secrets`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`
+  - `keys`: `.pem`, `.key`, `id_rsa`, `id_ed25519`, `id_ecdsa`
+  - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`
+  - `history`: `_history`, `.bash_history`, `.zsh_history`
+- **Env-loading tools** (toggleable): `direnv`, `mise`, `shadowenv`
+- **Always locked**: `infisical`, `env`, `printenv`
 - **Read commands**: `cat`, `head`, `tail`, `less`, `more`, `grep`, `rg`, `ag`, `sed`, `awk`, `strings`, `xxd`, `hexdump`, `bat`, `view`
-- **Deny rules**: `printenv`, `set`, `declare -x`, `export`, `history`, `/proc/*/environ`, `ps -E`/`ps auxe`, docker/podman env exposure and inspect
+- **Deny rules**: `set`, `declare -x`, `export`, `history`, `/proc/*/environ`, `ps -E`/`ps auxe`, docker/podman env exposure and inspect, agent writes to the hook's own config files
 - **Dependency protection**: Enabled for all standard package manifests
 
 ### Optional Config Files
@@ -78,11 +88,39 @@ To add custom rules or override settings, create config files that are loaded an
 **Merge behavior:**
 - Arrays (`sensitive_files`, `deny`, `patterns`) are **extended** (your patterns added to defaults)
 - Scalars (`enabled` flags) can be **overridden**
+- **Project config can only tighten.** Relaxing keys in `.security-hook.toml` (`sensitive_groups`, `tools`, `profile`, `allowed_files`, `read_commands`, `dependencies.enabled = false`, `rm.allowed_paths`, `git.force_push_allowed_branches`) are ignored with a warning, since the agent works inside the project. Put them in the user config.
+
+`just install` only writes the user config if it doesn't exist yet.
+
+### Relaxing Env-File Protection
+
+If secrets never touch disk (e.g. they are injected at runtime with `infisical run`), env files and the tools that load them are just config. Turn their protection off in the **user config**:
+
+```toml
+# All at once
+profile = "secretless"
+
+# Or piecemeal
+[sensitive_groups]
+env_files = false        # .env, .envrc readable/stageable
+
+[tools.direnv]
+enabled = false          # allow all direnv commands
+
+[tools.mise]
+allow_subcommands = ["install", "use", "ls"]   # allow only these
+```
+
+- Explicit `[sensitive_groups]` / `[tools]` entries override the profile.
+- `allow_subcommands` only matches a plainly written subcommand (`mise install`). Quoted, flag-prefixed or `$(...)` forms stay blocked.
+- `mise env` stays blocked even with mise disabled, because the `env` analyzer is always on.
+- Unknown group, tool or profile names produce a warning and leave protection on.
+- If your user config lists a built-in pattern in `sensitive_files` (older installs copied all defaults there), that copy keeps blocking after its group is disabled. A warning tells you which to remove.
 
 ### Example Config
 
 ```toml
-# Add extra sensitive file patterns (merged with defaults)
+# Add extra sensitive file patterns (merged with the enabled built-in groups)
 sensitive_files = [
     'my-company-secrets',
 ]
@@ -294,7 +332,7 @@ extra_patterns = [
 ]
 ```
 
-With paranoid mode enabled, even `ls .env` or `echo ".env created"` will be blocked.
+With paranoid mode enabled, even `ls .env` or `echo ".env created"` will be blocked. Paranoid mode uses the enabled sensitive groups, so a disabled group is not checked here either.
 
 ## Custom Rules
 
@@ -318,7 +356,7 @@ action = "allow"
 ## How It Works
 
 1. Claude Code invokes the hook via stdin (JSON with `tool_name`, `tool_input`)
-2. Hook loads hardcoded defaults, then merges optional config from `~/.config/aca-safety-net/config.toml` + `.security-hook.toml`
+2. Hook loads hardcoded defaults, then merges optional config from `~/.config/aca-safety-net/config.toml` (may relax) + `.security-hook.toml` (may only tighten). Config warnings are printed to stderr.
 3. For Bash: parses command, strips wrappers, checks deny rules + sensitive patterns
 4. For Read: checks file path against sensitive patterns
 5. For Edit/Write: checks if file matches dependency patterns (returns "ask" for approval)

@@ -18,6 +18,7 @@ mod rm;
 mod sensitive_files;
 mod shadowenv;
 pub(crate) mod substitution;
+mod tool_gate;
 mod uv;
 mod xargs;
 
@@ -58,19 +59,19 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
         return decision;
     }
 
-    let decision = analyze_direnv_raw(command);
+    let decision = analyze_direnv_raw(command, config);
     if decision.is_blocked() {
         return decision;
     }
 
     // mise must run before env: `mise env` matches both regexes, and we
     // want the more specific tool-name reason rather than the generic env one.
-    let decision = analyze_mise_raw(command);
+    let decision = analyze_mise_raw(command, config);
     if decision.is_blocked() {
         return decision;
     }
 
-    let decision = analyze_shadowenv_raw(command);
+    let decision = analyze_shadowenv_raw(command, config);
     if decision.is_blocked() {
         return decision;
     }

@@ -199,15 +199,11 @@ fn analyze_git_add(args: &[&str], config: &CompiledConfig) -> Decision {
 
         // Check if path matches sensitive pattern
         if let Some(pattern) = config.is_sensitive_path(arg) {
-            let mut block = crate::decision::BlockInfo::new(
+            return super::sensitive_files::sensitive_block(
                 "git.add.sensitive",
-                format!("git add on sensitive file matching '{}'", pattern),
+                "git add on",
+                pattern,
             );
-            if pattern.contains(r"\.env") {
-                block =
-                    block.with_details("Tip: .env(.*).(example|sample|template|dist) are allowed");
-            }
-            return Decision::Block(block);
         }
     }
 

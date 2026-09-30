@@ -1121,3 +1121,163 @@ fn test_edit_pyproject_toml_asks() {
         .stdout(predicate::str::contains("\"permissionDecision\":\"ask\""))
         .stdout(predicate::str::contains("uv add"));
 }
+
+// ── Sensitive groups, profiles, and project-config trust ───────────────────
+
+fn hook_json(tool: &str, tool_input: serde_json::Value, cwd: Option<&std::path::Path>) -> String {
+    let mut v = serde_json::json!({"tool_name": tool, "tool_input": tool_input});
+    if let Some(cwd) = cwd {
+        v["cwd"] = serde_json::json!(cwd.to_str().unwrap());
+    }
+    v.to_string()
+}
+
+#[test]
+fn test_secretless_profile_allows_env_files() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(&dir, r#"profile = "secretless""#);
+
+    for input in [
+        hook_json(
+            "Bash",
+            serde_json::json!({"command": "cat test_input/.env"}),
+            None,
+        ),
+        hook_json(
+            "Read",
+            serde_json::json!({"file_path": "test_input/.env.local"}),
+            None,
+        ),
+        hook_json(
+            "Bash",
+            serde_json::json!({"command": "git add .envrc"}),
+            None,
+        ),
+    ] {
+        cmd_with_config(&config)
+            .write_stdin(input)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty());
+    }
+}
+
+#[test]
+fn test_secretless_profile_keeps_hard_locks() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(&dir, r#"profile = "secretless""#);
+
+    for cmd in [
+        "infisical run -- npm test",
+        "infisical export",
+        "printenv",
+        "cat test_input/.ssh/id_rsa",
+    ] {
+        cmd_with_config(&config)
+            .write_stdin(hook_json("Bash", serde_json::json!({"command": cmd}), None))
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("BLOCKED"));
+    }
+}
+
+#[test]
+fn test_env_block_reports_group() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(&dir, r#"sensitive_files = []"#);
+
+    cmd_with_config(&config)
+        .write_stdin(hook_json(
+            "Read",
+            serde_json::json!({"file_path": "test_input/.env"}),
+            None,
+        ))
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("env_files"));
+}
+
+#[test]
+fn test_project_config_cannot_relax() {
+    let home = TempDir::new().unwrap();
+    let config = create_config(&home, r#"sensitive_files = []"#);
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join(".security-hook.toml"),
+        r#"
+profile = "secretless"
+allowed_files = ['.*']
+[sensitive_groups]
+env_files = false
+"#,
+    )
+    .unwrap();
+
+    cmd_with_config(&config)
+        .write_stdin(hook_json(
+            "Read",
+            serde_json::json!({"file_path": "test_input/.env"}),
+            Some(project.path()),
+        ))
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("can only tighten"));
+}
+
+#[test]
+fn test_project_config_can_tighten() {
+    let home = TempDir::new().unwrap();
+    let config = create_config(&home, r#"sensitive_files = []"#);
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join(".security-hook.toml"),
+        r#"sensitive_files = ['internal-token']"#,
+    )
+    .unwrap();
+
+    cmd_with_config(&config)
+        .write_stdin(hook_json(
+            "Read",
+            serde_json::json!({"file_path": "internal-token.txt"}),
+            Some(project.path()),
+        ))
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+}
+
+#[test]
+fn test_hook_config_files_protected() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(&dir, r#"sensitive_files = []"#);
+
+    for input in [
+        hook_json(
+            "Edit",
+            serde_json::json!({
+                "file_path": "/home/u/.config/aca-safety-net/config.toml",
+                "old_string": "a",
+                "new_string": "b"
+            }),
+            None,
+        ),
+        hook_json(
+            "Write",
+            serde_json::json!({"file_path": "/repo/.security-hook.toml", "content": "x"}),
+            None,
+        ),
+        hook_json(
+            "Bash",
+            serde_json::json!({
+                "command": "echo 'profile = \"secretless\"' >> ~/.config/aca-safety-net/config.toml"
+            }),
+            None,
+        ),
+    ] {
+        cmd_with_config(&config)
+            .write_stdin(input)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("aca-safety-net config"));
+    }
+}

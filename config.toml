@@ -1,105 +1,46 @@
 # ACA Safety Net Configuration
 # Copy to ~/.config/aca-safety-net/config.toml
-
-# Sensitive file patterns (applied to Bash commands and Read file_path)
+#
+# Every protection is on by default; this file only needs what you change.
 # Note: TOML single-quoted strings are literal - use single backslash for regex
-sensitive_files = [
-    '\.env\b',
-    '\.envrc\b',
-    'credentials',
-    'secrets',
-    '\.netrc\b',
-    '\.npmrc\b',
-    '\.pypirc\b',
-    '\.pem\b',
-    '\.key\b',
-    'id_rsa',
-    'id_ed25519',
-    'id_ecdsa',
-    '\.git-credentials',
-    'kubeconfig',
-    '\.aws/credentials',
-    '\.config/gcloud/',
-    '\.config/gh/hosts\.yml',
-    '_history\b',
-    '\.bash_history',
-    '\.zsh_history',
-]
 
-# Allowed file patterns (exempt from sensitive_files blocking)
-# These are well-known placeholder/template files that don't contain real secrets.
-# Add your own patterns here to extend the built-in defaults.
-allowed_files = [
-    '\.env\.example',
-    '\.env\.sample',
-    '\.env\.template',
-    '\.env\.dist',
-]
+# Extra sensitive file patterns, added to the enabled built-in groups.
+# Don't copy built-in patterns here: a copy stays blocked even after you
+# disable its group.
+sensitive_files = []
 
-# Commands that read file content (only block these + sensitive_files combo)
-read_commands = '\b(cat|head|tail|less|more|grep|rg|ag|sed|awk|strings|xxd|hexdump|bat|view)\b'
+# Built-in sensitive file groups. All default to true.
+#   env_files   .env, .env.*, .envrc
+#   direnv      .direnv/, direnvrc, ~/.config/direnv/
+#   mise        .mise*, mise.toml, ~/.config/mise/
+#   shadowenv   .shadowenv.d/
+#   credentials credentials, secrets, .netrc, .npmrc, .pypirc, .git-credentials
+#   keys        .pem, .key, id_rsa, id_ed25519, id_ecdsa
+#   cloud       .kube/config, kubeconfig, .aws/credentials, gcloud, gh hosts
+#   history     *_history, .bash_history, .zsh_history
+# [sensitive_groups]
+# env_files = false
 
-# Always block these patterns (env exposure)
-[[deny]]
-tool = "Bash"
-pattern = '^\s*printenv'
-reason = "Exposes environment variables"
+# Env-loading tools (direnv, mise, shadowenv) are blocked by default.
+# Disable a tool's block, or allow specific subcommands. Subcommands only
+# match when written plainly (`mise install`), never quoted or in $(...).
+# infisical and env/printenv are always blocked and not configurable.
+# [tools.direnv]
+# enabled = false
+# [tools.mise]
+# allow_subcommands = ["install", "use", "ls", "which"]
 
-[[deny]]
-tool = "Bash"
-pattern = '^\s*set\s*$'
-reason = "Exposes shell variables"
+# Preset for setups where secrets are injected at runtime (e.g.
+# `infisical run`) and env files hold none. Turns off the env_files,
+# direnv, mise and shadowenv groups and the direnv, mise and shadowenv
+# tool blocks. Explicit [sensitive_groups] / [tools] entries override it.
+# profile = "secretless"
 
-[[deny]]
-tool = "Bash"
-pattern = '^\s*declare\s+-x'
-reason = "Exposes exported variables"
+# Enable paranoid mode (blocks ANY mention of sensitive files)
+# [paranoid]
+# enabled = true
 
-[[deny]]
-tool = "Bash"
-pattern = '^\s*export\s*$'
-reason = "Exposes exported variables"
-
-[[deny]]
-tool = "Bash"
-pattern = '/proc/.*/environ'
-reason = "Exposes process environment"
-
-[[deny]]
-tool = "Bash"
-pattern = '\bps\b.*(-E|auxe)'
-reason = "Exposes process environment"
-
-[[deny]]
-tool = "Bash"
-pattern = '\b(docker|podman)\s+(exec|run)\b.*\benv\b'
-reason = "Exposes container environment"
-
-[[deny]]
-tool = "Bash"
-pattern = '\b(docker|podman)\s+inspect\b'
-reason = "Exposes container configuration"
-
-[[deny]]
-tool = "Bash"
-pattern = '\b(docker-compose|docker\s+compose)\s+exec\b.*\benv\b'
-reason = "Exposes container environment"
-
-# Dependency file protection
-# Requires user approval before editing package manifests
-# Encourages using CLI tools (cargo add, uv add, npm install, etc.)
-[dependencies]
-enabled = true
-patterns = [
-    '(^|/)Cargo\.toml$',
-    '(^|/)pyproject\.toml$',
-    '(^|/)package\.json$',
-    '(^|/)requirements\.txt$',
-    '(^|/)Gemfile$',
-    '(^|/)go\.mod$',
-    '(^|/)pom\.xml$',
-    '(^|/)build\.gradle(\.kts)?$',
-    '(^|/)composer\.json$',
-    '(^|/)Package\.swift$',
-]
-suggestion = "Use package manager CLI (cargo add, uv add, npm install, etc.) instead of editing directly"
+# Enable audit logging
+# [audit]
+# enabled = true
+# path = "~/.config/aca-safety-net/audit.log"
