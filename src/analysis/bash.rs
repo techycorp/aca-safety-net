@@ -3,7 +3,10 @@
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::input::BashInput;
-use crate::rules::{analyze_command, check_custom_rules, check_sensitive_path};
+use crate::rules::{
+    analyze_command, check_custom_rules, check_sensitive_path, check_ssh_bash_write,
+    check_strict_mentions,
+};
 use crate::shell::{Token, split_commands, strip_wrappers, tokenize};
 
 /// Analyze a Bash tool invocation.
@@ -96,7 +99,17 @@ pub fn analyze_bash(input: &BashInput, config: &CompiledConfig, cwd: Option<&str
     }
 
     // 6. Analyze command segments for built-in rules
-    analyze_command(command, config, cwd)
+    let decision = analyze_command(command, config, cwd);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    let decision = check_strict_mentions(command, config);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    check_ssh_bash_write(command, config)
 }
 
 #[cfg(test)]

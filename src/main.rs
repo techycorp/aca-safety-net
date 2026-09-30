@@ -1,6 +1,8 @@
 //! ACO Safety Net - Claude Code security hook entry point.
 
-use aca_safety_net::analysis::{analyze_bash, analyze_edit, analyze_read, analyze_write};
+use aca_safety_net::analysis::{
+    analyze_bash, analyze_edit, analyze_path_tool, analyze_read, analyze_write,
+};
 use aca_safety_net::audit::AuditLogger;
 use aca_safety_net::config::Config;
 use aca_safety_net::decision::Decision;
@@ -73,8 +75,7 @@ fn main() -> ExitCode {
                 Decision::allow()
             }
         }
-        // Other tools pass through
-        _ => Decision::allow(),
+        other => analyze_path_tool(other, &hook_input.tool_paths(), &compiled),
     };
 
     // Audit logging (if enabled)

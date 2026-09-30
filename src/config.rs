@@ -102,16 +102,8 @@ pub const SENSITIVE_GROUPS: &[(&str, &[&str])] = &[
             r"\.git-credentials",
         ],
     ),
-    (
-        "keys",
-        &[
-            r"\.pem\b",
-            r"\.key\b",
-            r"id_rsa",
-            r"id_ed25519",
-            r"id_ecdsa",
-        ],
-    ),
+    ("keys", &[r"(?i)\.pem\b", r"(?i)\.key\b", SSH_KEY_NAME_RE]),
+    ("ssh", &[SSH_DIR_RE]),
     (
         "cloud",
         &[
@@ -127,6 +119,17 @@ pub const SENSITIVE_GROUPS: &[(&str, &[&str])] = &[
         &[r"_history\b", r"\.bash_history", r"\.zsh_history"],
     ),
 ];
+
+/// Default SSH private key file names, wherever they live.
+const SSH_KEY_NAME_RE: &str = r"(?i)id_(rsa|dsa|ecdsa|ed25519)";
+
+/// Anything under `~/.ssh`, including the directory itself and globs.
+/// Readable exceptions are in `DEFAULT_ALLOWED_FILES`.
+const SSH_DIR_RE: &str = r"(?i)\.ssh\b";
+
+/// Patterns checked against every word of every Bash command, not just
+/// arguments to read commands. Limited to patterns with few false positives.
+const STRICT_PATTERNS: &[&str] = &[SSH_KEY_NAME_RE, SSH_DIR_RE];
 
 /// Group name reported for patterns from the user's `sensitive_files`.
 pub const USER_GROUP: &str = "user";
@@ -180,6 +183,10 @@ const DEFAULT_ALLOWED_FILES: &[&str] = &[
     r"\.env(\.[a-zA-Z0-9_-]+)*\.sample",
     r"\.env(\.[a-zA-Z0-9_-]+)*\.template",
     r"\.env(\.[a-zA-Z0-9_-]+)*\.dist",
+    // Public keys and non-secret SSH files. Anchored to a plain path so a
+    // longer string that merely ends in `.pub` is not exempt.
+    r"(?i)^[\w./~@$-]*\.pub$",
+    r"(?i)^[\w./~@$-]*\.ssh/(config|known_hosts(\.old)?|authorized_keys)$",
 ];
 
 /// Default read commands that can expose file contents.
@@ -411,6 +418,8 @@ pub struct SensitivePattern {
     pub source: String,
     /// Built-in group name, or `USER_GROUP` for user extras.
     pub group: &'static str,
+    /// Checked against every word of every Bash command (see `STRICT_PATTERNS`).
+    pub strict: bool,
     pub re: Regex,
 }
 
@@ -605,6 +614,7 @@ impl Config {
                 sensitive_patterns.push(SensitivePattern {
                     source: p.to_string(),
                     group,
+                    strict: STRICT_PATTERNS.contains(p),
                     re: compile_regex(p)?,
                 });
             }
@@ -623,6 +633,7 @@ impl Config {
             sensitive_patterns.push(SensitivePattern {
                 source: p.clone(),
                 group: USER_GROUP,
+                strict: false,
                 re: compile_regex(p)?,
             });
         }
@@ -767,6 +778,17 @@ impl CompiledConfig {
         }
 
         self.sensitive_patterns.iter().find(|p| p.re.is_match(path))
+    }
+
+    /// Like `is_sensitive_path`, but only for strict patterns, which apply to
+    /// any word of any Bash command.
+    pub fn is_strict_sensitive(&self, word: &str) -> Option<&SensitivePattern> {
+        if self.allowed_patterns.iter().any(|re| re.is_match(word)) {
+            return None;
+        }
+        self.sensitive_patterns
+            .iter()
+            .find(|p| p.strict && p.re.is_match(word))
     }
 
     /// Check if a command is a read command.

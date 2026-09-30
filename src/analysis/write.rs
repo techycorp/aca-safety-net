@@ -3,7 +3,7 @@
 use crate::config::CompiledConfig;
 use crate::decision::{AskInfo, Decision};
 use crate::input::WriteInput;
-use crate::rules::check_custom_rules;
+use crate::rules::{check_custom_rules, check_sensitive_path, check_ssh_write};
 
 /// Analyze a Write tool invocation.
 pub fn analyze_write(input: &WriteInput, config: &CompiledConfig) -> Decision {
@@ -22,7 +22,17 @@ pub fn analyze_write(input: &WriteInput, config: &CompiledConfig) -> Decision {
         return custom_decision;
     }
 
-    // 3. Check dependency file patterns (ask for approval)
+    // 3. Check sensitive file patterns
+    let decision = check_ssh_write(path, config);
+    if decision.is_blocked() {
+        return decision;
+    }
+    let decision = check_sensitive_path(path, config);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    // 4. Check dependency file patterns (ask for approval)
     if config.is_dependency_file(path) {
         let mut ask = AskInfo::new(
             "dependencies.write",

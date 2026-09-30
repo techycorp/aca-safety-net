@@ -138,6 +138,20 @@ impl HookInput {
         })
     }
 
+    /// Paths and path globs in the input of a tool without a dedicated
+    /// analyzer (Grep, Glob, NotebookEdit, ...). Grep's `pattern` is a
+    /// content regex, so only Glob's `pattern` counts as a path.
+    pub fn tool_paths(&self) -> Vec<String> {
+        let mut keys = vec!["file_path", "path", "notebook_path", "glob"];
+        if self.tool_name == "Glob" {
+            keys.push("pattern");
+        }
+        keys.iter()
+            .filter_map(|k| self.tool_input.get(*k).and_then(|v| v.as_str()))
+            .map(String::from)
+            .collect()
+    }
+
     /// Get the primary path being accessed (for any file-based tool).
     pub fn file_path(&self) -> Option<&str> {
         self.tool_input.get("file_path").and_then(|v| v.as_str())

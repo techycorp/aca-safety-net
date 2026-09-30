@@ -1,11 +1,22 @@
 //! Sensitive file and secrets detection.
 
+use once_cell::sync::Lazy;
+use regex::Regex;
+
 use crate::config::{CompiledConfig, SensitivePattern};
 use crate::decision::{BlockInfo, Decision};
+use crate::shell::{Token, split_commands, strip_wrappers, tokenize};
 
 const ENV_TIP: &str = "Tip: .env(.*).(example|sample|template|dist) are allowed. \
     If env files hold no secrets, the user can set `[sensitive_groups] env_files = false` \
     in their aca-safety-net user config";
+
+/// Shown for anything under ~/.ssh and for private key files.
+pub const SSH_TIP: &str = "~/.ssh and SSH private keys are off-limits to agents: do not \
+    read, copy, list, or pass them to any command. To connect to a host, run \
+    `ssh <host-alias>` using an alias from ~/.ssh/config (which is readable, as are \
+    *.pub and known_hosts). If a host needs a key that is not configured, ask the \
+    user to add a Host entry to ~/.ssh/config";
 
 /// Build a block for a sensitive pattern match. The rule ID carries the
 /// pattern's group so users can see which toggle applies.
@@ -19,8 +30,42 @@ pub fn sensitive_block(rule_prefix: &str, action: &str, pattern: &SensitivePatte
     );
     if pattern.group == "env_files" {
         block = block.with_details(ENV_TIP);
+    } else if pattern.strict {
+        block = block.with_details(SSH_TIP);
     }
     Decision::Block(block)
+}
+
+/// Splits a raw command on whitespace, quotes, and shell/assignment
+/// punctuation, so paths inside `-c "..."` strings, `$(...)`, `--opt=path`,
+/// and redirections become separate words.
+static RAW_WORD_SPLIT: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"[\s;&|<>()`'"=,:{}\[\]]+"#).unwrap());
+
+/// Block any Bash command that mentions a strict sensitive pattern (SSH keys,
+/// ~/.ssh) anywhere, whatever the command. Checks both the tokenizer's words
+/// (quotes resolved, so `.s''sh` becomes `.ssh`) and a punctuation split of the
+/// raw command (so embedded paths are isolated from surrounding text).
+pub fn check_strict_mentions(command: &str, config: &CompiledConfig) -> Decision {
+    let mut words: Vec<String> = RAW_WORD_SPLIT
+        .split(command)
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect();
+    for segment in split_commands(command) {
+        for token in tokenize(&strip_wrappers(&segment.command)) {
+            match token {
+                Token::Word(w) | Token::Redirect(w) => words.push(w),
+                Token::Assignment(_, v) => words.push(v),
+            }
+        }
+    }
+    for word in &words {
+        if let Some(pattern) = config.is_strict_sensitive(word) {
+            return sensitive_block("secrets.sensitive_file", "command mentions", pattern);
+        }
+    }
+    Decision::allow()
 }
 
 /// Check if a file path matches sensitive patterns.

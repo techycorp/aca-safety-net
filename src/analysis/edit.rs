@@ -3,7 +3,7 @@
 use crate::config::CompiledConfig;
 use crate::decision::{AskInfo, Decision};
 use crate::input::EditInput;
-use crate::rules::check_custom_rules;
+use crate::rules::{check_custom_rules, check_sensitive_path, check_ssh_write};
 
 /// Analyze an Edit tool invocation.
 pub fn analyze_edit(input: &EditInput, config: &CompiledConfig) -> Decision {
@@ -23,6 +23,16 @@ pub fn analyze_edit(input: &EditInput, config: &CompiledConfig) -> Decision {
     }
 
     // 3. Check dependency file patterns (ask for approval)
+    let decision = check_ssh_write(path, config);
+    if decision.is_blocked() {
+        return decision;
+    }
+
+    let decision = check_sensitive_path(path, config);
+    if decision.is_blocked() {
+        return decision;
+    }
+
     if config.is_dependency_file(path) {
         let mut ask = AskInfo::new(
             "dependencies.edit",

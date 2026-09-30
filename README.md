@@ -41,7 +41,7 @@ Add to `~/.claude/settings.json`:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Edit|Write",
+        "matcher": "Bash|Read|Edit|Write|Grep|Glob|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -69,7 +69,8 @@ The following protections are always active:
   - `mise`: `.mise*`, `mise.toml`, `~/.config/mise/`
   - `shadowenv`: `.shadowenv.d/`
   - `credentials`: `credentials`, `secrets`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`
-  - `keys`: `.pem`, `.key`, `id_rsa`, `id_ed25519`, `id_ecdsa`
+  - `keys`: `.pem`, `.key`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` (case-insensitive)
+  - `ssh`: everything under `.ssh/` except `*.pub`, `config`, `known_hosts`, `authorized_keys` (readable, never writable)
   - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`
   - `history`: `_history`, `.bash_history`, `.zsh_history`
 - **Env-loading tools** (toggleable): `direnv`, `mise`, `shadowenv`
@@ -91,6 +92,20 @@ To add custom rules or override settings, create config files that are loaded an
 - **Project config can only tighten.** Relaxing keys in `.security-hook.toml` (`sensitive_groups`, `tools`, `profile`, `allowed_files`, `read_commands`, `dependencies.enabled = false`, `rm.allowed_paths`, `git.force_push_allowed_branches`) are ignored with a warning, since the agent works inside the project. Put them in the user config.
 
 `just install` only writes the user config if it doesn't exist yet.
+
+### SSH Keys
+
+SSH private keys get stricter treatment than other sensitive files, governed by the `ssh` group (on by default, not part of `secretless`):
+
+- **Any Bash command** that mentions `.ssh` or a default key name (`id_rsa`, `id_ed25519`, ...) is blocked, not just read commands. This covers `cp`, `tar`, `scp`, `base64`, `python -c "open(...)"`, `$(...)`, globs (`~/.ssh/*`), `ls ~/.ssh`, and `cd ~/.ssh && ...`.
+- **Readable:** `~/.ssh/config`, `known_hosts`, `authorized_keys`, and any `*.pub`. Nothing under `.ssh` is writable by an agent (Edit, Write, NotebookEdit, or Bash `>`, `tee`, `cp`, `mv`, `rm`, `sed -i`, ...).
+- **No explicit keys:** `ssh`/`scp`/`sftp -i`, `-o IdentityFile=`, `rsync -e 'ssh -i ...'`, and `GIT_SSH_COMMAND` / `core.sshCommand` with a key are blocked. Agents connect with `ssh <host-alias>` and let `~/.ssh/config` or ssh-agent pick the key.
+- **Human-only commands:** `ssh-add`, `ssh-keygen`, and `ssh-copy-id` are blocked anywhere in a command, with a message telling the agent to ask the user to run them. `ssh-keyscan` is allowed.
+- **File tools:** Read, Edit, Write, Grep (`path`, `glob`), Glob (`path`, `pattern`), and NotebookEdit are all checked. Add `Grep|Glob|NotebookEdit` to the hook matcher (see Installation) for the last three.
+
+If your private keys live outside the filesystem (1Password SSH agent, Secretive), you can turn this off with `[sensitive_groups] ssh = false`. The `keys` group still covers key-named files.
+
+**Limits:** the hook matches command text. It cannot see paths assembled at runtime (e.g. from base64), `find ~ -name 'id_*' -exec cat {} +`, or file access through MCP servers.
 
 ### Relaxing Env-File Protection
 

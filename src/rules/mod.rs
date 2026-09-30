@@ -17,6 +17,7 @@ mod pipenv;
 mod rm;
 mod sensitive_files;
 mod shadowenv;
+mod ssh;
 pub(crate) mod substitution;
 mod tool_gate;
 mod uv;
@@ -37,8 +38,9 @@ pub use mise::{analyze_mise, analyze_mise_raw};
 pub use parallel::analyze_parallel;
 pub use pipenv::analyze_pipenv;
 pub use rm::analyze_rm;
-pub use sensitive_files::{check_git_add_sensitive, check_sensitive_path};
+pub use sensitive_files::{check_git_add_sensitive, check_sensitive_path, check_strict_mentions};
 pub use shadowenv::{analyze_shadowenv, analyze_shadowenv_raw};
+pub use ssh::{check_ssh_bash_write, check_ssh_write};
 pub use uv::analyze_uv;
 pub use xargs::analyze_xargs;
 
@@ -86,6 +88,11 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
         return decision;
     }
 
+    let decision = ssh::analyze_ssh_raw(command, config);
+    if decision.is_blocked() {
+        return decision;
+    }
+
     // Split command on operators
     let segments = split_commands(command);
 
@@ -122,7 +129,7 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
             "mise" => analyze_mise(&tokens, config),
             "pipenv" => analyze_pipenv(&tokens, config),
             "shadowenv" => analyze_shadowenv(&tokens, config),
-            _ => Decision::Allow,
+            _ => ssh::analyze_ssh_segment(&tokens, config),
         };
 
         if decision.is_blocked() {

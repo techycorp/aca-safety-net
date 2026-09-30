@@ -15,7 +15,10 @@ sensitive_files = []
 #   mise        .mise*, mise.toml, ~/.config/mise/
 #   shadowenv   .shadowenv.d/
 #   credentials credentials, secrets, .netrc, .npmrc, .pypirc, .git-credentials
-#   keys        .pem, .key, id_rsa, id_ed25519, id_ecdsa
+#   keys        .pem, .key, id_rsa, id_dsa, id_ecdsa, id_ed25519
+#   ssh         anything under .ssh/ except *.pub, config, known_hosts,
+#               authorized_keys (read-only); also blocks ssh -i, ssh-add,
+#               ssh-keygen, ssh-copy-id. Turn off only if keys are not on disk.
 #   cloud       .kube/config, kubeconfig, .aws/credentials, gcloud, gh hosts
 #   history     *_history, .bash_history, .zsh_history
 # [sensitive_groups]
