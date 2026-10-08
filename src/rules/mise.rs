@@ -7,26 +7,20 @@
 //! cost of a bypass is unbounded secret exposure and there is no
 //! agent-relevant use of mise that doesn't have a safer alternative.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
-
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
+use crate::shell::exec_sites::ExecSites;
 
 use super::tool_gate;
 
 const TOOL: &str = "mise";
 
-/// Matches the first `mise` word in a command, optionally capturing the
-/// next identifier-like token as the subcommand. The capture lets the raw
-/// analyzer surface the same subcommand-specific reason that the
-/// per-segment dispatch would have used. The character class is limited to
-/// `[A-Za-z0-9_-]` so that trailing shell metacharacters (quotes, parens,
-/// pipes) don't end up glued onto the captured subcommand in contexts like
-/// `bash -c "mise env"` or `echo $(mise env)`.
-static MISE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\bmise\b(?:\s+([A-Za-z0-9_-]+))?").unwrap());
+/// Known subcommands, for spotting `<unknown wrapper> mise <subcommand>`.
+const SUBCOMMANDS: &[&str] = &[
+    "env", "hook-env", "exec", "x", "shell", "activate", "settings", "config", "set", "install",
+    "use", "run",
+];
 
 const GENERIC_REASON: &str =
     "mise is blocked entirely because .mise.toml routinely contains secrets";
@@ -91,22 +85,13 @@ pub fn analyze_mise(tokens: &[Token], config: &CompiledConfig) -> Decision {
     Decision::block(rule, reason)
 }
 
-/// Raw-command analysis: blocks any mention of `mise` as a word, including
-/// inside `$(...)` substitutions and after operators. We deliberately accept
-/// false positives on the literal word "mise" appearing in strings or
-/// comments — mise is too sensitive to allow case-by-case exceptions.
-///
-/// When the next token after `mise` is a recognized subcommand, the raw
-/// analyzer returns the same specific reason the dispatch would have used.
-/// In substitution contexts where the next token includes trailing shell
-/// metacharacters (e.g. `mise env)` inside `$(...)`), the capture won't
-/// match any subcommand arm and we fall back to the generic reason.
-///
-/// Every occurrence must be allowed by `[tools.mise]` for the command to pass.
-pub fn analyze_mise_raw(raw_command: &str, config: &CompiledConfig) -> Decision {
-    for occ in tool_gate::raw_occurrences(&MISE_RE, raw_command) {
-        if !tool_gate::allows(TOOL, occ.clean, config) {
-            let (rule, reason) = mise_subcommand_info(occ.captured.unwrap_or(""));
+/// Whole-command analysis: blocks every place the command would run mise,
+/// including substitutions, `bash -c` strings and wrappers. Every
+/// invocation must be allowed by `[tools.mise]` for the command to pass.
+pub fn analyze_mise_raw(sites: &ExecSites, config: &CompiledConfig) -> Decision {
+    for inv in sites.invocations(&[TOOL], SUBCOMMANDS) {
+        if !tool_gate::allows(TOOL, inv.clean.as_deref(), config) {
+            let (rule, reason) = mise_subcommand_info(inv.captured.as_deref().unwrap_or(""));
             return Decision::block(rule, reason);
         }
     }
@@ -121,6 +106,10 @@ mod tests {
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
+    }
+
+    fn raw(cmd: &str, c: &CompiledConfig) -> Decision {
+        analyze_mise_raw(&ExecSites::parse(cmd), c)
     }
 
     fn cfg_tool(enabled: bool, allow: &[&str]) -> CompiledConfig {
@@ -141,41 +130,50 @@ mod tests {
     fn test_disabled_allows_segment_and_raw() {
         let c = cfg_tool(false, &[]);
         assert!(!analyze_mise(&tokenize("mise exec -- ls"), &c).is_blocked());
-        assert!(!analyze_mise_raw("mise exec -- ls", &c).is_blocked());
-        assert!(!analyze_mise_raw("cat .mise.toml", &c).is_blocked());
+        assert!(!raw("mise exec -- ls", &c).is_blocked());
+        assert!(!raw("cat .mise.toml", &c).is_blocked());
     }
 
     #[test]
     fn test_allowlist_allows_listed_only() {
         let c = cfg_tool(true, &["install", "ls"]);
         assert!(!analyze_mise(&tokenize("mise install node@20"), &c).is_blocked());
-        assert!(!analyze_mise_raw("mise install node@20", &c).is_blocked());
-        assert!(!analyze_mise_raw("mise ls", &c).is_blocked());
+        assert!(!raw("mise install node@20", &c).is_blocked());
+        assert!(!raw("mise ls", &c).is_blocked());
         assert!(analyze_mise(&tokenize("mise exec -- ls"), &c).is_blocked());
-        assert!(analyze_mise_raw("mise exec -- ls", &c).is_blocked());
+        assert!(raw("mise exec -- ls", &c).is_blocked());
     }
 
     #[test]
     fn test_allowlist_checks_every_occurrence() {
         let c = cfg_tool(true, &["install"]);
-        let d = analyze_mise_raw("mise install && mise exec -- ls", &c);
+        let d = raw("mise install && mise exec -- ls", &c);
         assert_eq!(d.block_info().unwrap().rule, "mise.exec");
+    }
+
+    #[test]
+    fn test_allowlist_sees_through_quotes_and_nesting() {
+        let c = cfg_tool(true, &["install"]);
+        assert!(!raw(r#"mise "install""#, &c).is_blocked());
+        assert!(!raw("echo $(mise install)", &c).is_blocked());
+        assert!(!raw(r#"bash -c "mise install""#, &c).is_blocked());
     }
 
     #[test]
     fn test_allowlist_blocks_unclean_subcommands() {
         let c = cfg_tool(true, &["install", "env"]);
-        assert!(analyze_mise_raw(r#"mise "install""#, &c).is_blocked());
-        assert!(analyze_mise_raw("echo $(mise install)", &c).is_blocked());
-        assert!(analyze_mise_raw(r#"bash -c "mise install""#, &c).is_blocked());
-        assert!(analyze_mise_raw("mise --cd /x install", &c).is_blocked());
+        assert!(raw("mise --cd /x install", &c).is_blocked());
+        assert!(raw("mise $SUB", &c).is_blocked());
+        assert!(raw("$(mise install)", &c).is_blocked());
+        assert!(raw("mis? install", &c).is_blocked());
+        assert!(raw("unknown-wrapper mise install", &c).is_blocked());
         assert!(analyze_mise(&tokenize("mise --cd /x install"), &c).is_blocked());
     }
 
     #[test]
     fn test_mise_env_still_blocked_by_env_analyzer_when_disabled() {
         let c = cfg_tool(false, &[]);
-        assert!(!analyze_mise_raw("mise env", &c).is_blocked());
+        assert!(!raw("mise env", &c).is_blocked());
         assert!(crate::rules::analyze_command("mise env", &c, None).is_blocked());
     }
 
@@ -293,121 +291,128 @@ mod tests {
 
     #[test]
     fn test_raw_standalone() {
-        assert!(analyze_mise_raw("mise env", &cfg()).is_blocked());
+        assert!(raw("mise env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_echo_substitution() {
-        assert!(analyze_mise_raw("echo $(mise env -s bash)", &cfg()).is_blocked());
+        assert!(raw("echo $(mise env -s bash)", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_variable_assignment() {
-        assert!(analyze_mise_raw("BLOB=$(mise hook-env)", &cfg()).is_blocked());
+        assert!(raw("BLOB=$(mise hook-env)", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_eval_substitution() {
-        assert!(analyze_mise_raw(r#"eval "$(mise activate bash)""#, &cfg()).is_blocked());
+        assert!(raw(r#"eval "$(mise activate bash)""#, &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_after_and() {
-        assert!(analyze_mise_raw("cd /tmp && mise env", &cfg()).is_blocked());
+        assert!(raw("cd /tmp && mise env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_bash_c_quoted() {
-        assert!(analyze_mise_raw(r#"bash -c "mise env""#, &cfg()).is_blocked());
+        assert!(raw(r#"bash -c "mise env""#, &cfg()).is_blocked());
     }
 
     #[test]
-    fn test_raw_safe_argument_still_blocked() {
-        // Argument-use is still blocked — no case-by-case exceptions.
-        assert!(analyze_mise_raw("some-cmd --opt $(mise env)", &cfg()).is_blocked());
+    fn test_raw_substitution_in_argument_blocked() {
+        assert!(raw("some-cmd --opt $(mise env)", &cfg()).is_blocked());
+    }
+
+    #[test]
+    fn test_raw_data_mentions_allowed() {
+        assert!(!raw("rg mise", &cfg()).is_blocked());
+        assert!(!raw("brew bundle add mise", &cfg()).is_blocked());
+        assert!(!raw(r#"git commit -m "drop mise env""#, &cfg()).is_blocked());
+        assert!(!raw("ls # mise env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_path_invocation() {
-        assert!(analyze_mise_raw("/opt/homebrew/bin/mise env", &cfg()).is_blocked());
+        assert!(raw("/opt/homebrew/bin/mise env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_unrelated() {
-        assert!(!analyze_mise_raw("ls -la", &cfg()).is_blocked());
+        assert!(!raw("ls -la", &cfg()).is_blocked());
     }
 
     // ── False-positive guards (word boundary) ───────────────────────────────
 
     #[test]
     fn test_raw_promise_not_blocked() {
-        assert!(!analyze_mise_raw("npm install promise", &cfg()).is_blocked());
+        assert!(!raw("npm install promise", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_demise_not_blocked() {
-        assert!(!analyze_mise_raw("echo the demise of foo", &cfg()).is_blocked());
+        assert!(!raw("echo the demise of foo", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_misery_not_blocked() {
-        assert!(!analyze_mise_raw("grep misery file.txt", &cfg()).is_blocked());
+        assert!(!raw("grep misery file.txt", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_automise_not_blocked() {
-        assert!(!analyze_mise_raw("cat automise.log", &cfg()).is_blocked());
+        assert!(!raw("cat automise.log", &cfg()).is_blocked());
     }
 
     // ── Quoting / substitution edge cases ───────────────────────────────────
 
     #[test]
     fn test_raw_backtick_substitution() {
-        assert!(analyze_mise_raw("echo `mise env`", &cfg()).is_blocked());
+        assert!(raw("echo `mise env`", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_raw_single_quoted_in_substitution() {
         // Single-quoted form inside $() — word boundary still matches
         // because `'` is a non-word char.
-        assert!(analyze_mise_raw("echo $('mise env')", &cfg()).is_blocked());
+        assert!(raw("echo $('mise env')", &cfg()).is_blocked());
     }
 
     // ── Subcommand reason surfaces from raw layer ───────────────────────────
 
     #[test]
     fn test_raw_env_returns_specific_reason() {
-        let d = analyze_mise_raw("mise env", &cfg());
+        let d = raw("mise env", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "mise.env");
     }
 
     #[test]
     fn test_raw_hook_env_returns_specific_reason() {
-        let d = analyze_mise_raw("mise hook-env", &cfg());
+        let d = raw("mise hook-env", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "mise.hook_env");
     }
 
     #[test]
     fn test_raw_exec_returns_specific_reason() {
-        let d = analyze_mise_raw("mise exec -- printenv", &cfg());
+        let d = raw("mise exec -- printenv", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "mise.exec");
     }
 
     #[test]
     fn test_raw_activate_returns_specific_reason() {
-        let d = analyze_mise_raw("mise activate bash", &cfg());
+        let d = raw("mise activate bash", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "mise.activate");
     }
 
     #[test]
     fn test_raw_bare_returns_generic_reason() {
-        let d = analyze_mise_raw("mise", &cfg());
+        let d = raw("mise", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "mise.blocked");
     }
 
     #[test]
     fn test_raw_unknown_subcommand_returns_generic() {
-        let d = analyze_mise_raw("mise install", &cfg());
+        let d = raw("mise install", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "mise.blocked");
     }
 }

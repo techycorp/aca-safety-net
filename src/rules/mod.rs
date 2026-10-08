@@ -46,6 +46,7 @@ pub use xargs::analyze_xargs;
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
+use crate::shell::exec_sites::ExecSites;
 use crate::shell::{Token, split_commands, strip_wrappers, tokenize};
 
 /// Analyze a command and return a decision.
@@ -61,29 +62,31 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
         return decision;
     }
 
-    let decision = analyze_direnv_raw(command, config);
+    let sites = ExecSites::parse(command);
+
+    let decision = analyze_direnv_raw(&sites, config);
     if decision.is_blocked() {
         return decision;
     }
 
-    // mise must run before env: `mise env` matches both regexes, and we
-    // want the more specific tool-name reason rather than the generic env one.
-    let decision = analyze_mise_raw(command, config);
+    // mise must run before env: both block `mise env`, and we want the more
+    // specific tool-name reason rather than the generic env one.
+    let decision = analyze_mise_raw(&sites, config);
     if decision.is_blocked() {
         return decision;
     }
 
-    let decision = analyze_shadowenv_raw(command, config);
+    let decision = analyze_shadowenv_raw(&sites, config);
     if decision.is_blocked() {
         return decision;
     }
 
-    let decision = analyze_infisical_raw(command);
+    let decision = analyze_infisical_raw(&sites);
     if decision.is_blocked() {
         return decision;
     }
 
-    let decision = analyze_env_raw(command);
+    let decision = analyze_env_raw(&sites);
     if decision.is_blocked() {
         return decision;
     }

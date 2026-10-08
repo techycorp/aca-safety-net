@@ -6,17 +6,39 @@
 //! them to stdout (`infisical secrets get`, `infisical export`). Every use
 //! involves real secret values, so we block at the top level.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
-
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
+use crate::shell::exec_sites::ExecSites;
 
-/// Matches the first `infisical` word in a command, optionally capturing
-/// the next identifier-like token as the subcommand.
-static INFISICAL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\binfisical\b(?:\s+([A-Za-z0-9_-]+))?").unwrap());
+/// Known subcommands, for spotting `<unknown wrapper> infisical <subcommand>`.
+const SUBCOMMANDS: &[&str] = &[
+    "login",
+    "logout",
+    "init",
+    "run",
+    "export",
+    "secrets",
+    "dynamic-secrets",
+    "scan",
+    "agent",
+    "agent-vault",
+    "cert-manager",
+    "gateway",
+    "relay",
+    "proxy",
+    "kmip",
+    "pam",
+    "bootstrap",
+    "org",
+    "profile",
+    "vault",
+    "token",
+    "service-token",
+    "user",
+    "reset",
+    "ssh",
+];
 
 const GENERIC_REASON: &str =
     "infisical fetches and injects secrets from the Infisical cloud; blocked entirely";
@@ -67,13 +89,17 @@ pub fn analyze_infisical(tokens: &[Token], _config: &CompiledConfig) -> Decision
     Decision::block(rule, reason)
 }
 
-/// Raw-command analysis: catches `infisical` anywhere in the command.
-pub fn analyze_infisical_raw(raw_command: &str) -> Decision {
-    let Some(caps) = INFISICAL_RE.captures(raw_command) else {
+/// Whole-command analysis: blocks every place the command would run
+/// infisical, including substitutions, `bash -c` strings and wrappers.
+pub fn analyze_infisical_raw(sites: &ExecSites) -> Decision {
+    let Some(inv) = sites
+        .invocations(&["infisical"], SUBCOMMANDS)
+        .into_iter()
+        .next()
+    else {
         return Decision::allow();
     };
-    let subcommand = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-    let (rule, reason) = infisical_subcommand_info(subcommand);
+    let (rule, reason) = infisical_subcommand_info(inv.captured.as_deref().unwrap_or(""));
     Decision::block(rule, reason)
 }
 
@@ -85,6 +111,10 @@ mod tests {
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
+    }
+
+    fn raw(cmd: &str) -> Decision {
+        analyze_infisical_raw(&ExecSites::parse(cmd))
     }
 
     // ── Per-segment dispatch ────────────────────────────────────────────────
@@ -166,31 +196,78 @@ mod tests {
 
     #[test]
     fn test_raw_standalone() {
-        assert!(analyze_infisical_raw("infisical run -- ls").is_blocked());
+        assert!(raw("infisical run -- ls").is_blocked());
     }
 
     #[test]
     fn test_raw_substitution() {
-        assert!(analyze_infisical_raw("echo $(infisical secrets get TOKEN)").is_blocked());
+        assert!(raw("echo $(infisical secrets get TOKEN)").is_blocked());
     }
 
     #[test]
     fn test_raw_variable_assignment() {
-        assert!(analyze_infisical_raw("TOK=$(infisical export)").is_blocked());
+        assert!(raw("TOK=$(infisical export)").is_blocked());
     }
 
     #[test]
     fn test_raw_after_and() {
-        assert!(analyze_infisical_raw("cd /tmp && infisical run -- ls").is_blocked());
+        assert!(raw("cd /tmp && infisical run -- ls").is_blocked());
     }
 
     #[test]
     fn test_raw_bash_c_quoted() {
-        assert!(analyze_infisical_raw(r#"bash -c "infisical run -- ls""#).is_blocked());
+        assert!(raw(r#"bash -c "infisical run -- ls""#).is_blocked());
     }
 
     #[test]
     fn test_raw_unrelated() {
-        assert!(!analyze_infisical_raw("ls -la").is_blocked());
+        assert!(!raw("ls -la").is_blocked());
+    }
+
+    #[test]
+    fn test_raw_data_mentions_allowed() {
+        for cmd in [
+            "brew bundle add infisical",
+            "grep -i infisical src",
+            r#"git commit -m "fix infisical""#,
+            "ls # infisical run",
+            "echo 'infisical export' > notes.md",
+        ] {
+            assert!(!raw(cmd).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_raw_execution_sites_blocked() {
+        for cmd in [
+            "cd x && infisical run",
+            "cd x\ninfisical run",
+            "echo `infisical export`",
+            "bash -lc 'infisical run'",
+            "eval infisical",
+            "sudo -u root infisical",
+            "timeout 5 infisical",
+            "xargs infisical",
+            r"find . -exec infisical {} \;",
+            "Infisical run",
+            "'infi''sical' run",
+            r"$'\x69nfisical'",
+            "{infisical,x}",
+            "infisica?",
+            "echo 'infisical run' | sh",
+            "bash <<EOF\ninfisical run\nEOF",
+            "npx @infisical/cli",
+            "git -c alias.x='!infisical run' x",
+            "GIT_SSH_COMMAND='infisical run' git fetch",
+            r#"python -c 'import os;os.system("infisical")'"#,
+        ] {
+            assert!(raw(cmd).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_raw_reason_from_wrapped_subcommand() {
+        let d = raw("sudo infisical export");
+        assert_eq!(d.block_info().unwrap().rule, "infisical.export");
     }
 }

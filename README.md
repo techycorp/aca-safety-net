@@ -127,7 +127,7 @@ allow_subcommands = ["install", "use", "ls"]   # allow only these
 ```
 
 - Explicit `[sensitive_groups]` / `[tools]` entries override the profile.
-- `allow_subcommands` only matches a plainly written subcommand (`mise install`). Quoted, flag-prefixed or `$(...)` forms stay blocked.
+- `allow_subcommands` matches the literal word right after the tool (`mise install`, `mise "install"`, also inside `$(...)` or `bash -c`). Flag-prefixed (`mise --cd x install`), variable, glob and command-word-substitution forms stay blocked.
 - `mise env` stays blocked even with mise disabled, because the `env` analyzer is always on.
 - Unknown group, tool or profile names produce a warning and leave protection on.
 - If your user config lists a built-in pattern in `sensitive_files` (older installs copied all defaults there), that copy keeps blocking after its group is disabled. A warning tells you which to remove.
@@ -170,6 +170,22 @@ path = "~/.config/aca-safety-net/audit.log"
 - Credentials: `.aws/credentials`, `.config/gcloud/`, `.netrc`, `.npmrc`
 - Certificates: `*.pem`, `*.key`
 - History files: `.bash_history`, `.zsh_history`
+
+### Env-Loading Tools (Bash)
+
+`infisical`, `direnv`, `mise`, `shadowenv`, `env`, `printenv` and `gprintenv` are blocked wherever the shell would **run** them, and allowed where they only appear as data (`grep -i mise src`, `brew install direnv`, `git commit -m "fix infisical"`, `cat src/rules/env.rs`).
+
+The command is parsed, not regex-matched:
+
+- **Command positions:** after `;` `&&` `||` `|` `&` newlines and `(`, past leading assignments, redirections and reserved words (`if`, `do`, `!`, `{`, ...). `for`/`case`/`select` word lists and `function` names are data.
+- **Substitutions:** `$(...)`, backticks, `<(...)`, `>(...)`, also inside double quotes, `${...}` and unquoted heredocs, are parsed recursively.
+- **Obfuscation:** quote removal (`'infi''sical'`), backslash escapes, `$'\x69...'`, case (`Infisical`), paths (`/opt/bin/mise`, `=mise`), brace expansion (`{mise,x}`) and globs (`mis?`) are resolved before matching.
+- **Wrappers:** `sudo`, `timeout`, `nohup`, `xargs`, `find -exec`, `env`, `nice`, `strace`, `gdb --args`, `docker run|exec`, `kubectl exec`, `npx`/`uvx`/`pnpm dlx` (the package spec counts), `uv run`, `op run`, `mise exec`, `direnv exec`, `nix shell -c`, and more are looked through.
+- **Code strings:** `bash -c`, `eval`, `su -c`, `ssh host CMD`, `watch`, `trap`, `alias`, assignment values (`GIT_SSH_COMMAND=...`), `git -c alias.x=!...`, `ssh -o ProxyCommand=...`, `rsync -e`, `tar --to-command`, and similar are parsed as shell. Text piped or redirected into a shell (`... | sh`, `bash <<EOF`) is searched for the name anywhere. Interpreter code (`python -c`, `perl -e`, `awk`, `sed .../e`, ...) is blocked when it names the tool and can start a process.
+- **Unknown wrappers:** `somewrapper mise install` is blocked when the tool is followed by one of its known subcommands.
+- **Fail closed:** text that can't be parsed, or nests too deeply, is searched for the name anywhere. Comments are checked both as comments and as code.
+
+Side effects of failing closed: an assignment whose value is the tool name (`X=mise`) is blocked, and a comment that mentions the tool and contains an unbalanced quote may be blocked.
 
 ### Environment Exposure (Bash)
 
@@ -419,6 +435,14 @@ Cannot detect or prevent:
 - Network exfiltration: `curl -d @.env`
 - Shell aliases
 - Encoded/obfuscated commands
+
+For the env-loading tools specifically, these are out of scope:
+- Execution from files: `source f`, scripts, Makefiles, `just` recipes, `package.json` scripts, git config aliases, container image entrypoints, cron
+- A variable as the command: `X=mise; $X env` (the assignment itself is blocked, but `$X` from the environment is not)
+- Names assembled at runtime: `$(printf 'mi%s' 'se')`, base64, `rev`
+- Renamed or copied binaries, and shell functions or aliases defined earlier in the session
+- History re-execution (`!!`, `fc`)
+- Remote environment semantics: a command run over `ssh` or in a container is checked as if it ran locally
 
 This is static analysis only - it cannot execute commands to determine their actual behavior.
 

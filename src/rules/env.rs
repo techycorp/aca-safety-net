@@ -10,22 +10,12 @@
 //! but shell already supports inline assignment (`FOO=bar cmd`) as a safer
 //! equivalent, so we block the wrapper form too to keep the rule simple.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
-
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
+use crate::shell::exec_sites::ExecSites;
 
-/// Matches `env`, `printenv`, or `gprintenv` as a command word, capturing
-/// which one in group 1. The leading character class restricts to shell
-/// positions where a command can start: start-of-string, whitespace, shell
-/// operators, `$(`, backtick, `/` for path-prefixed `/usr/bin/env`, and
-/// quote chars so quoted forms inside `$(...)` (e.g. `echo $('env')`) don't
-/// bypass the check. This deliberately avoids matching `.env`,
-/// `.env.example`, `pyenv`, etc.
-static ENV_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?:^|[\s;&|<>(`/'"])(env|g?printenv)\b"#).unwrap());
+const NAMES: &[&str] = &["env", "printenv", "gprintenv"];
 
 const ENV_RULE: &str = "env.blocked";
 const ENV_REASON: &str =
@@ -62,16 +52,23 @@ pub fn analyze_env(tokens: &[Token], _config: &CompiledConfig) -> Decision {
     }
 }
 
-/// Raw-command analysis: catches `env` / `printenv` / `gprintenv` anywhere
-/// in the command, including inside `$(...)`, after operators, and as
-/// path-prefixed invocations.
-pub fn analyze_env_raw(raw_command: &str) -> Decision {
-    let Some(caps) = ENV_RE.captures(raw_command) else {
-        return Decision::allow();
-    };
-    let matched = caps.get(1).map(|m| m.as_str()).unwrap_or("env");
-    let (rule, reason) = info_for(matched);
-    Decision::block(rule, reason)
+/// Whole-command analysis: blocks every place the command would run `env`,
+/// `printenv` or `gprintenv`, including substitutions, `bash -c` strings,
+/// wrappers and path-prefixed forms. Also blocks `mise env`, which dumps the
+/// same data, so it stays blocked when `[tools.mise]` is disabled.
+pub fn analyze_env_raw(sites: &ExecSites) -> Decision {
+    if let Some(inv) = sites.invocations(NAMES, &[]).into_iter().next() {
+        let (rule, reason) = info_for(&inv.name);
+        return Decision::block(rule, reason);
+    }
+    let mise_env = sites
+        .invocations(&["mise"], &["env"])
+        .into_iter()
+        .any(|inv| inv.captured.as_deref() == Some("env"));
+    if mise_env {
+        return Decision::block(ENV_RULE, ENV_REASON);
+    }
+    Decision::allow()
 }
 
 #[cfg(test)]
@@ -82,6 +79,10 @@ mod tests {
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
+    }
+
+    fn raw(cmd: &str) -> Decision {
+        analyze_env_raw(&ExecSites::parse(cmd))
     }
 
     // ── Per-segment dispatch ────────────────────────────────────────────────
@@ -131,103 +132,103 @@ mod tests {
 
     #[test]
     fn test_raw_standalone() {
-        assert!(analyze_env_raw("env").is_blocked());
+        assert!(raw("env").is_blocked());
     }
 
     #[test]
     fn test_raw_after_and() {
-        assert!(analyze_env_raw("cd /tmp && env").is_blocked());
+        assert!(raw("cd /tmp && env").is_blocked());
     }
 
     #[test]
     fn test_raw_substitution() {
-        assert!(analyze_env_raw("echo $(env)").is_blocked());
+        assert!(raw("echo $(env)").is_blocked());
     }
 
     #[test]
     fn test_raw_variable_assignment() {
-        assert!(analyze_env_raw("DUMP=$(env)").is_blocked());
+        assert!(raw("DUMP=$(env)").is_blocked());
     }
 
     #[test]
     fn test_raw_pipe() {
-        assert!(analyze_env_raw("env | grep TOKEN").is_blocked());
+        assert!(raw("env | grep TOKEN").is_blocked());
     }
 
     #[test]
     fn test_raw_redirect() {
-        assert!(analyze_env_raw("env > /tmp/leak").is_blocked());
+        assert!(raw("env > /tmp/leak").is_blocked());
     }
 
     #[test]
     fn test_raw_path_form() {
-        assert!(analyze_env_raw("/usr/bin/env python -c 'pass'").is_blocked());
+        assert!(raw("/usr/bin/env python -c 'pass'").is_blocked());
     }
 
     #[test]
     fn test_raw_pyenv_not_blocked() {
-        assert!(!analyze_env_raw("pyenv install 3.12").is_blocked());
+        assert!(!raw("pyenv install 3.12").is_blocked());
     }
 
     #[test]
     fn test_raw_environment_word_not_blocked() {
         // "environment" doesn't match \benv\b
-        assert!(!analyze_env_raw("echo environment is set").is_blocked());
+        assert!(!raw("echo environment is set").is_blocked());
     }
 
     #[test]
     fn test_raw_env_var_underscore_not_blocked() {
-        assert!(!analyze_env_raw("echo $MY_ENV_VAR").is_blocked());
+        assert!(!raw("echo $MY_ENV_VAR").is_blocked());
     }
 
     // ── Quoted bypass guards (gap 1) ────────────────────────────────────────
 
     #[test]
     fn test_raw_single_quoted_in_substitution() {
-        assert!(analyze_env_raw("echo $('env')").is_blocked());
+        assert!(raw("echo $('env')").is_blocked());
     }
 
     #[test]
     fn test_raw_double_quoted_in_substitution() {
-        assert!(analyze_env_raw(r#"echo $("env")"#).is_blocked());
+        assert!(raw(r#"echo $("env")"#).is_blocked());
     }
 
     #[test]
     fn test_raw_bash_c_quoted() {
-        assert!(analyze_env_raw(r#"bash -c "env""#).is_blocked());
+        assert!(raw(r#"bash -c "env""#).is_blocked());
     }
 
     // ── printenv / gprintenv variants ───────────────────────────────────────
 
     #[test]
     fn test_raw_printenv() {
-        assert!(analyze_env_raw("printenv").is_blocked());
+        assert!(raw("printenv").is_blocked());
     }
 
     #[test]
     fn test_raw_gprintenv() {
-        assert!(analyze_env_raw("gprintenv").is_blocked());
+        assert!(raw("gprintenv").is_blocked());
     }
 
     #[test]
     fn test_raw_printenv_with_arg() {
-        assert!(analyze_env_raw("printenv PATH").is_blocked());
+        assert!(raw("printenv PATH").is_blocked());
     }
 
     #[test]
     fn test_raw_printenv_after_chain() {
         // The case the old anchored deny rule `^\s*printenv` missed.
-        assert!(analyze_env_raw("cd /tmp && printenv").is_blocked());
+        assert!(raw("cd /tmp && printenv").is_blocked());
     }
 
     #[test]
     fn test_raw_gprintenv_pipe() {
-        assert!(analyze_env_raw("gprintenv | grep TOKEN").is_blocked());
+        assert!(raw("gprintenv | grep TOKEN").is_blocked());
     }
 
     #[test]
     fn test_raw_printenv_reason() {
-        let d = analyze_env_raw("printenv");
+        let d = raw("printenv");
         let info = d.block_info().unwrap();
         assert_eq!(info.rule, "printenv.blocked");
         assert!(info.reason.contains("printenv"));
@@ -236,7 +237,7 @@ mod tests {
     #[test]
     fn test_raw_gprintenv_reason() {
         // gprintenv uses the same rule tag and reason as printenv.
-        let d = analyze_env_raw("gprintenv FOO");
+        let d = raw("gprintenv FOO");
         assert_eq!(d.block_info().unwrap().rule, "printenv.blocked");
     }
 
@@ -250,11 +251,47 @@ mod tests {
         assert!(analyze_env(&tokenize("/opt/homebrew/bin/gprintenv"), &cfg()).is_blocked());
     }
 
+    #[test]
+    fn test_raw_data_mentions_allowed() {
+        for cmd in [
+            "cat src/rules/env.rs",
+            "grep env file",
+            "rg -n 'env' src",
+            "ls env/",
+            "cat .env.example",
+            "git commit -m 'drop env usage'",
+        ] {
+            assert!(!raw(cmd).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_raw_wrapped_and_nested() {
+        for cmd in [
+            "sudo env",
+            "xargs env",
+            "nohup printenv",
+            "env FOO=1 ls",
+            "mise exec -- env",
+            "direnv exec . env",
+            "echo `printenv`",
+        ] {
+            assert!(raw(cmd).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_raw_mise_env() {
+        assert!(raw("mise env").is_blocked());
+        assert!(raw("cd x && mise env -s bash").is_blocked());
+        assert!(!raw("mise install").is_blocked());
+    }
+
     // Negative — make sure we don't catch substrings.
 
     #[test]
     fn test_raw_printenv_not_in_word() {
         // `myprintenv` (no separator before) shouldn't match.
-        assert!(!analyze_env_raw("/usr/bin/myprintenv").is_blocked());
+        assert!(!raw("/usr/bin/myprintenv").is_blocked());
     }
 }

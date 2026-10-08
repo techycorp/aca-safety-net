@@ -1,5 +1,6 @@
 //! Shell command parsing.
 
+pub mod exec_sites;
 mod splitter;
 mod tokenizer;
 mod wrappers;

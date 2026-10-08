@@ -48,6 +48,7 @@ fn format_block_message(info: &BlockInfo) -> String {
         msg.push_str(&format!(" ({})", details));
     }
     msg.push_str("\n\nYOU ABSOLUTELY MUST NOT ATTEMPT TO READ THE TARGET FILE/SECRET/TOKEN VIA WORKAROUNDS. CONSULT THE USER IF YOU ARE CERTAIN THE TARGET FILE/SECRET/TOKEN NEEDS TO BE VERIFIED, ONLY AFTER EXHAUSTIVE DEBUGGING THAT RESULTS IN THIS CERTAINTY.");
+    msg.push_str("\n\nIF YOU THINK THIS BLOCK IS A MISTAKE, DO NOT REWORD OR OBFUSCATE THE COMMAND TO GET PAST IT. ASK THE USER TO RUN IT.");
     msg
 }
 
@@ -107,6 +108,7 @@ mod tests {
         let msg = format_response(&decision).unwrap();
         assert!(msg.contains("BLOCKED"));
         assert!(msg.contains("test reason"));
+        assert!(msg.contains("DO NOT REWORD OR OBFUSCATE"));
     }
 
     #[test]
