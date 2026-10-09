@@ -68,37 +68,7 @@ pub fn analyze_bash(input: &BashInput, config: &CompiledConfig, cwd: Option<&str
         }
     }
 
-    // 5. Check for git add on sensitive files
-    let segments = split_commands(command);
-    for segment in &segments {
-        let stripped = strip_wrappers(&segment.command);
-        let tokens = tokenize(&stripped);
-
-        let words: Vec<&str> = tokens
-            .iter()
-            .filter_map(|t| match t {
-                Token::Word(w) => Some(w.as_str()),
-                _ => None,
-            })
-            .collect();
-
-        if words.len() >= 2 && words[0] == "git" && words[1] == "add" {
-            for path in &words[2..] {
-                if path.starts_with('-') {
-                    continue;
-                }
-                let decision = check_sensitive_path(path, config);
-                if decision.is_blocked() {
-                    return Decision::block(
-                        "git.add.sensitive",
-                        format!("git add on sensitive file: {}", path),
-                    );
-                }
-            }
-        }
-    }
-
-    // 6. Analyze command segments for built-in rules
+    // 5. Built-in rules for every place the command runs a program
     let decision = analyze_command(command, config, cwd);
     if decision.is_blocked() {
         return decision;

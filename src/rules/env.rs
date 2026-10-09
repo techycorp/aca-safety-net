@@ -10,9 +10,7 @@
 //! but shell already supports inline assignment (`FOO=bar cmd`) as a safer
 //! equivalent, so we block the wrapper form too to keep the rule simple.
 
-use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
 use crate::shell::exec_sites::ExecSites;
 
 const NAMES: &[&str] = &["env", "printenv", "gprintenv"];
@@ -28,27 +26,6 @@ fn info_for(matched: &str) -> (&'static str, &'static str) {
     match matched {
         "printenv" | "gprintenv" => (PRINTENV_RULE, PRINTENV_REASON),
         _ => (ENV_RULE, ENV_REASON),
-    }
-}
-
-/// Per-segment dispatch: block when the command name is `env`, `printenv`,
-/// or `gprintenv`.
-pub fn analyze_env(tokens: &[Token], _config: &CompiledConfig) -> Decision {
-    let cmd = tokens.iter().find_map(|t| match t {
-        Token::Word(w) => Some(w.as_str()),
-        _ => None,
-    });
-
-    let Some(cmd) = cmd else {
-        return Decision::allow();
-    };
-
-    let basename = cmd.rsplit('/').next().unwrap_or(cmd);
-    if matches!(basename, "env" | "printenv" | "gprintenv") {
-        let (rule, reason) = info_for(basename);
-        Decision::block(rule, reason)
-    } else {
-        Decision::allow()
     }
 }
 
@@ -74,12 +51,6 @@ pub fn analyze_env_raw(sites: &ExecSites) -> Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::shell::tokenize;
-
-    fn cfg() -> CompiledConfig {
-        Config::default().compile().unwrap()
-    }
 
     fn raw(cmd: &str) -> Decision {
         analyze_env_raw(&ExecSites::parse(cmd))
@@ -89,43 +60,43 @@ mod tests {
 
     #[test]
     fn test_bare_env() {
-        assert!(analyze_env(&tokenize("env"), &cfg()).is_blocked());
+        assert!(raw("env").is_blocked());
     }
 
     #[test]
     fn test_env_with_options() {
-        assert!(analyze_env(&tokenize("env -0"), &cfg()).is_blocked());
+        assert!(raw("env -0").is_blocked());
     }
 
     #[test]
     fn test_env_with_assignment_no_cmd() {
-        assert!(analyze_env(&tokenize("env FOO=bar"), &cfg()).is_blocked());
+        assert!(raw("env FOO=bar").is_blocked());
     }
 
     #[test]
     fn test_env_as_wrapper() {
         // We block this too — user should use `FOO=bar npm test`.
-        assert!(analyze_env(&tokenize("env FOO=bar npm test"), &cfg()).is_blocked());
+        assert!(raw("env FOO=bar npm test").is_blocked());
     }
 
     #[test]
     fn test_env_path_prefixed() {
-        assert!(analyze_env(&tokenize("/usr/bin/env python script.py"), &cfg()).is_blocked());
+        assert!(raw("/usr/bin/env python script.py").is_blocked());
     }
 
     #[test]
     fn test_not_env_pyenv() {
-        assert!(!analyze_env(&tokenize("pyenv versions"), &cfg()).is_blocked());
+        assert!(!raw("pyenv versions").is_blocked());
     }
 
     #[test]
     fn test_not_env_rbenv() {
-        assert!(!analyze_env(&tokenize("rbenv install"), &cfg()).is_blocked());
+        assert!(!raw("rbenv install").is_blocked());
     }
 
     #[test]
     fn test_not_env_unrelated() {
-        assert!(!analyze_env(&tokenize("ls -la"), &cfg()).is_blocked());
+        assert!(!raw("ls -la").is_blocked());
     }
 
     // ── Raw / substitution-aware ────────────────────────────────────────────
@@ -243,12 +214,12 @@ mod tests {
 
     #[test]
     fn test_dispatch_bare_printenv() {
-        assert!(analyze_env(&tokenize("printenv"), &cfg()).is_blocked());
+        assert!(raw("printenv").is_blocked());
     }
 
     #[test]
     fn test_dispatch_gprintenv_path() {
-        assert!(analyze_env(&tokenize("/opt/homebrew/bin/gprintenv"), &cfg()).is_blocked());
+        assert!(raw("/opt/homebrew/bin/gprintenv").is_blocked());
     }
 
     #[test]

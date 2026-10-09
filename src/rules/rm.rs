@@ -2,22 +2,36 @@
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
+use crate::shell::exec_sites::{ExecSites, Invocation, SiteKind};
 use std::path::Path;
 
-/// Analyze rm command for dangerous operations.
-pub fn analyze_rm(tokens: &[Token], config: &CompiledConfig, cwd: Option<&str>) -> Decision {
-    let words: Vec<&str> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Word(w) => Some(w.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    if words.is_empty() {
-        return Decision::allow();
+/// Check every place the command would run rm, including `$()`, code
+/// strings, and commands run by `xargs`, `find -exec` and `parallel`.
+pub fn analyze_rm(sites: &ExecSites, config: &CompiledConfig, cwd: Option<&str>) -> Decision {
+    for inv in sites.invocations(&["rm"], &[]) {
+        let decision = analyze_rm_invocation(&inv, config, cwd);
+        if decision.is_blocked() {
+            return decision;
+        }
     }
+    Decision::allow()
+}
+
+/// Targets supplied at runtime can't be checked, so any such rm is blocked.
+fn unknown_targets(inv: &Invocation) -> bool {
+    inv.open || inv.kind == SiteKind::Exact || inv.argv.iter().any(|w| w.contains("{}"))
+}
+
+fn analyze_rm_invocation(inv: &Invocation, config: &CompiledConfig, cwd: Option<&str>) -> Decision {
+    if unknown_targets(inv) {
+        return Decision::block(
+            "rm.unknown_targets",
+            "rm with targets supplied at runtime (xargs, find -exec, parallel) can delete arbitrary files",
+        );
+    }
+    let words: Vec<&str> = std::iter::once("rm")
+        .chain(inv.argv.iter().map(String::as_str))
+        .collect();
 
     // Check for recursive flag (force flag tracked for future use)
     let mut has_recursive = false;
@@ -154,7 +168,6 @@ fn is_path_within(path: &str, cwd: &str, allowed_paths: &[String]) -> bool {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::shell::tokenize;
 
     fn test_config() -> CompiledConfig {
         Config {
@@ -171,56 +184,138 @@ mod tests {
     #[test]
     fn test_rm_rf_root() {
         let config = test_config();
-        let tokens = tokenize("rm -rf /");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm -rf /"),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_rm_rf_home() {
         let config = test_config();
-        let tokens = tokenize("rm -rf /home");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm -rf /home"),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_rm_rf_outside_cwd() {
         let config = test_config();
-        let tokens = tokenize("rm -rf /var/log");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm -rf /var/log"),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_rm_rf_in_cwd() {
         let config = test_config();
-        let tokens = tokenize("rm -rf build/");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm -rf build/"),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(!decision.is_blocked());
     }
 
     #[test]
     fn test_rm_rf_tmp() {
         let config = test_config();
-        let tokens = tokenize("rm -rf /tmp/cache");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm -rf /tmp/cache"),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(!decision.is_blocked()); // /tmp is allowed
     }
 
     #[test]
     fn test_rm_rf_parent_escape() {
         let config = test_config();
-        let tokens = tokenize("rm -rf ../../..");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm -rf ../../.."),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_rm_no_recursive() {
         let config = test_config();
-        let tokens = tokenize("rm /etc/passwd");
-        let decision = analyze_rm(&tokens, &config, Some("/home/user/project"));
+        let decision = analyze_rm(
+            &ExecSites::parse("rm /etc/passwd"),
+            &config,
+            Some("/home/user/project"),
+        );
         assert!(!decision.is_blocked()); // Not recursive
+    }
+
+    fn rule(cmd: &str) -> Option<String> {
+        analyze_rm(
+            &ExecSites::parse(cmd),
+            &test_config(),
+            Some("/home/user/project"),
+        )
+        .block_info()
+        .map(|i| i.rule.clone())
+    }
+
+    #[test]
+    fn test_runtime_targets_blocked() {
+        for cmd in [
+            "xargs rm",
+            "xargs rm -rf",
+            "xargs -I {} rm {}",
+            "find . -name '*.log' -exec rm {} ;",
+            "find . -name '*.log' -exec rm {} +",
+            "find . -name '*.tmp' -execdir rm {} \\;",
+            "find . -name '*.tmp' -ok rm {} ;",
+            "find . -exec /bin/rm {} +",
+            "parallel rm {}",
+            "parallel rm -rf {}",
+            "parallel rm ::: a b",
+            "ls | xargs sudo rm",
+        ] {
+            assert_eq!(rule(cmd).as_deref(), Some("rm.unknown_targets"), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_nested_and_wrapped() {
+        for cmd in [
+            "cd x && rm -rf /",
+            "echo ok\nrm -rf /etc",
+            "echo $(rm -rf /)",
+            "bash -lc 'rm -rf /'",
+            "sudo /bin/rm -rf /",
+            "RM -rf /",
+            r#"python -c 'import os; os.system("rm -rf /")'"#,
+        ] {
+            assert!(rule(cmd).is_some(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_safe_allowed() {
+        for cmd in [
+            "rm file.txt",
+            "rm -rf build/",
+            "xargs cat",
+            "xargs -I {} echo {}",
+            "parallel echo {}",
+            "parallel gzip {}",
+            "find . -name '*.txt' -exec cat {} ;",
+            "grep 'rm -rf /' notes.md",
+        ] {
+            assert_eq!(rule(cmd), None, "{cmd}");
+        }
     }
 }

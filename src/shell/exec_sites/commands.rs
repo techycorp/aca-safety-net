@@ -36,6 +36,8 @@ pub struct Cx<'s> {
     comments: bool,
     /// Count of inner commands and scripts entered, to tell wrappers apart.
     wraps: usize,
+    /// Commands analyzed now get more arguments at runtime (`xargs`, `find -exec`).
+    open: bool,
 }
 
 impl<'s> Cx<'s> {
@@ -45,6 +47,7 @@ impl<'s> Cx<'s> {
             depth,
             comments,
             wraps: 0,
+            open: false,
         }
     }
 
@@ -56,6 +59,15 @@ impl<'s> Cx<'s> {
     fn inner(&mut self, argv: &[Word], level: usize) -> StdinUse {
         self.wraps += 1;
         analyze_argv(argv, self, level + 1)
+    }
+
+    /// Like [`Cx::inner`], for a command that gets more arguments at runtime.
+    fn inner_open(&mut self, argv: &[Word], level: usize) -> StdinUse {
+        let prev = self.open;
+        self.open = true;
+        let stdin = self.inner(argv, level);
+        self.open = prev;
+        stdin
     }
 
     fn anywhere(&mut self, text: &str) {
@@ -102,6 +114,7 @@ fn analyze_argv(argv: &[Word], cx: &mut Cx, level: usize) -> StdinUse {
     cx.sites.push(Site::Command {
         argv: argv.to_vec(),
         adjacency: false,
+        open: cx.open,
     });
     if cmd.dynamic {
         for s in &cmd.subs {
@@ -1261,7 +1274,7 @@ fn xargs(args: &[Word], cx: &mut Cx, level: usize) -> StdinUse {
     ];
     let o = parse_opts(args, VALS);
     let rest = &args[o.rest..];
-    cx.inner(rest, level);
+    cx.inner_open(rest, level);
     let replace = o
         .found
         .iter()
@@ -1330,7 +1343,7 @@ fn parallel(args: &[Word], cx: &mut Cx, level: usize) -> StdinUse {
         }
         return StdinUse::None;
     }
-    cx.inner(cmd, level);
+    cx.inner_open(cmd, level);
     cx.script(&join(cmd));
     StdinUse::None
 }
@@ -1345,7 +1358,7 @@ fn exec_clauses(args: &[Word], flags: &[&str], cx: &mut Cx, level: usize) {
                 .iter()
                 .position(|w| w.text == ";" || w.text == "+")
                 .map_or(args.len(), |p| start + p);
-            cx.inner(&args[start..end], level);
+            cx.inner_open(&args[start..end], level);
             i = end + 1;
         } else {
             i += 1;

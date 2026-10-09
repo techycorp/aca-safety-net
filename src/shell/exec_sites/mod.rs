@@ -52,8 +52,13 @@ impl Word {
 
 #[derive(Debug, Clone)]
 enum Site {
-    /// A simple command. `argv[0]` is in command position.
-    Command { argv: Vec<Word>, adjacency: bool },
+    /// A simple command. `argv[0]` is in command position. `open` means
+    /// more arguments are appended at runtime (`xargs`, `find -exec`).
+    Command {
+        argv: Vec<Word>,
+        adjacency: bool,
+        open: bool,
+    },
     /// A word that runs as a program if it names the tool (wrapper operands).
     Exact(Word),
     /// Text that runs the tool if the name appears in it (package specs, opaque code).
@@ -74,6 +79,26 @@ pub struct Invocation {
     /// The words after the tool when it is a plain command word; `None` for
     /// other sites. A word is `None` when it isn't literal (`$x`, globs).
     pub args: Option<Vec<Option<String>>>,
+    /// Best-effort words after the tool for every kind of site, verbatim.
+    /// Empty for [`SiteKind::Exact`].
+    pub argv: Vec<String>,
+    /// What kind of site matched.
+    pub kind: SiteKind,
+    /// More arguments are appended at runtime, so `argv` is incomplete.
+    pub open: bool,
+}
+
+/// How certain the words of an [`Invocation`] are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteKind {
+    /// A simple command with the tool in command position.
+    Command,
+    /// `<unknown-cmd> ... tool sub`: the tool appears among another command's arguments.
+    Adjacent,
+    /// Opaque text (code strings, unparseable input); words are split heuristically.
+    Opaque,
+    /// A word run as a program whose arguments can't be seen.
+    Exact,
 }
 
 /// The execution sites of one shell command.
@@ -112,14 +137,21 @@ impl ExecSites {
 }
 
 fn match_site(site: &Site, name: &str, subcommands: &[&str], out: &mut Vec<Invocation>) {
-    let hit = |captured: Option<String>, clean: Option<String>| Invocation {
+    let hit = |captured: Option<String>, kind: SiteKind, argv: Vec<String>| Invocation {
         name: name.to_string(),
         captured,
-        clean,
+        clean: None,
         args: None,
+        argv,
+        kind,
+        open: false,
     };
     match site {
-        Site::Command { argv, adjacency } => {
+        Site::Command {
+            argv,
+            adjacency,
+            open,
+        } => {
             if word_matches(&argv[0], name) {
                 let next = argv.get(1).filter(|w| !w.text.starts_with('-'));
                 let captured = next.map(|w| w.text.clone());
@@ -133,37 +165,88 @@ fn match_site(site: &Site, name: &str, subcommands: &[&str], out: &mut Vec<Invoc
                         .collect()
                 });
                 out.push(Invocation {
+                    clean,
                     args,
-                    ..hit(captured, clean)
+                    open: *open,
+                    ..hit(
+                        captured,
+                        SiteKind::Command,
+                        argv[1..].iter().map(|w| w.text.clone()).collect(),
+                    )
                 });
             }
             if *adjacency && !subcommands.is_empty() {
-                for pair in argv[1..].windows(2) {
+                for (i, pair) in argv[1..].windows(2).enumerate() {
                     if word_matches(&pair[0], name)
                         && pair[1].literal()
                         && subcommands.contains(&pair[1].text.as_str())
                     {
-                        out.push(hit(Some(pair[1].text.clone()), None));
+                        out.push(hit(
+                            Some(pair[1].text.clone()),
+                            SiteKind::Adjacent,
+                            argv[i + 2..].iter().map(|w| w.text.clone()).collect(),
+                        ));
                     }
                 }
             }
         }
         Site::Exact(word) => {
             if word_matches(word, name) {
-                out.push(hit(None, None));
+                out.push(hit(None, SiteKind::Exact, Vec::new()));
             }
         }
         Site::Anywhere(text) => {
             if contains_name(text, name) {
-                out.push(hit(None, None));
+                push_opaque(text, name, &hit, out);
             }
         }
         Site::Interp(code, kind) => {
             if contains_name(code, name) && has_exec_primitive(code, *kind) {
-                out.push(hit(None, None));
+                push_opaque(code, name, &hit, out);
             }
         }
     }
+}
+
+/// Upper bound on the words kept after a name found in opaque text.
+const MAX_OPAQUE_WORDS: usize = 32;
+
+/// One invocation per occurrence of `name` in opaque text, with the words
+/// that follow it. When the name only appears inside a word (an image like
+/// `amazon/aws-cli`), its arguments can't be known, so the site is
+/// [`SiteKind::Exact`]. Always at least one, so a match is never dropped.
+fn push_opaque(
+    text: &str,
+    name: &str,
+    hit: &dyn Fn(Option<String>, SiteKind, Vec<String>) -> Invocation,
+    out: &mut Vec<Invocation>,
+) {
+    let words = opaque_words(text);
+    let mut found = false;
+    for (i, w) in words.iter().enumerate() {
+        if normalize_command_name(w) == name {
+            let argv: Vec<String> = words[i + 1..]
+                .iter()
+                .take(MAX_OPAQUE_WORDS)
+                .cloned()
+                .collect();
+            let captured = argv.first().filter(|w| !w.starts_with('-')).cloned();
+            out.push(hit(captured, SiteKind::Opaque, argv));
+            found = true;
+        }
+    }
+    if !found {
+        out.push(hit(None, SiteKind::Exact, Vec::new()));
+    }
+}
+
+/// Split opaque text into word-like runs, dropping quotes, brackets and
+/// separators, so `["gcloud", "auth"]` and `gcloud auth` read the same.
+fn opaque_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || "-_:./=@{}%+~".contains(c)))
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Whether `word`, in command position, could resolve to the program `name`.

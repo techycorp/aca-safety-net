@@ -11,7 +11,6 @@
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
 use crate::shell::exec_sites::{ExecSites, Invocation};
 
 use super::tool_gate;
@@ -222,35 +221,6 @@ fn mise_subcommand_info(subcommand: Option<&str>) -> (&'static str, String) {
     (rule, reason.to_string())
 }
 
-/// Per-segment dispatch: block a `mise ...` segment whose subcommand is not
-/// safe and not allowed by `[tools.mise]`.
-pub fn analyze_mise(tokens: &[Token], config: &CompiledConfig) -> Decision {
-    let words: Vec<&str> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Word(w) => Some(w.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    if words.is_empty() {
-        return Decision::allow();
-    }
-
-    let basename = words[0].rsplit('/').next().unwrap_or(words[0]);
-    if basename != "mise" {
-        return Decision::allow();
-    }
-
-    let args: Vec<Option<&str>> = words[1..].iter().map(|w| Some(*w)).collect();
-    let subcommand = resolve_subcommand(&args);
-    if allowed(subcommand.as_deref(), config) {
-        return Decision::allow();
-    }
-    let (rule, reason) = mise_subcommand_info(subcommand.as_deref());
-    Decision::block(rule, reason)
-}
-
 /// Whole-command analysis: checks every place the command would run mise,
 /// including substitutions, `bash -c` strings and wrappers. Each invocation
 /// must be a safe subcommand or allowed by `[tools.mise]`.
@@ -271,7 +241,6 @@ pub fn analyze_mise_raw(sites: &ExecSites, config: &CompiledConfig) -> Decision 
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::shell::tokenize;
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
@@ -282,7 +251,7 @@ mod tests {
     }
 
     fn segment(cmd: &str) -> Decision {
-        analyze_mise(&tokenize(cmd), &cfg())
+        raw(cmd, &cfg())
     }
 
     fn rule(d: Decision) -> String {
@@ -419,7 +388,7 @@ mod tests {
     #[test]
     fn test_disabled_allows_segment_and_raw() {
         let c = cfg_tool(false, &[]);
-        assert!(!analyze_mise(&tokenize("mise exec -- ls"), &c).is_blocked());
+        assert!(!raw("mise exec -- ls", &c).is_blocked());
         assert!(!raw("mise exec -- ls", &c).is_blocked());
         assert!(!raw("mise run build", &c).is_blocked());
     }
@@ -427,7 +396,7 @@ mod tests {
     #[test]
     fn test_allowlist_extends_safe_set() {
         let c = cfg_tool(true, &["run"]);
-        assert!(!analyze_mise(&tokenize("mise run build"), &c).is_blocked());
+        assert!(!raw("mise run build", &c).is_blocked());
         assert!(!raw("mise run build", &c).is_blocked());
         assert!(!raw("mise r build", &c).is_blocked());
         assert!(!raw("mise install", &c).is_blocked());

@@ -472,6 +472,54 @@ fn test_invocation_name() {
     assert_eq!(inv[0].name, "printenv");
 }
 
+fn first(cmd: &str, name: &str, subs: &[&str]) -> Invocation {
+    ExecSites::parse(cmd).invocations(&[name], subs).remove(0)
+}
+
+#[test]
+fn test_invocation_argv_and_kind() {
+    let inv = first("sudo gcloud --project p auth list", "gcloud", &[]);
+    assert_eq!(inv.kind, SiteKind::Command);
+    assert_eq!(inv.argv, ["--project", "p", "auth", "list"]);
+    assert!(!inv.open);
+
+    let inv = first("mytool gcloud auth list", "gcloud", &["auth"]);
+    assert_eq!(inv.kind, SiteKind::Adjacent);
+    assert_eq!(inv.argv, ["auth", "list"]);
+
+    let inv = first(
+        r#"python -c 'subprocess.run(["gcloud", "auth", "list"])'"#,
+        "gcloud",
+        &[],
+    );
+    assert_eq!(inv.kind, SiteKind::Opaque);
+    assert_eq!(&inv.argv[..2], ["auth", "list"]);
+
+    let inv = first("docker run amazon/aws-cli s3 ls", "aws", &[]);
+    assert_eq!(inv.kind, SiteKind::Exact);
+    assert!(inv.argv.is_empty());
+
+    // Non-literal words keep their text in `argv`.
+    let inv = first("gcloud $SUB list", "gcloud", &[]);
+    assert_eq!(inv.argv, ["$SUB", "list"]);
+}
+
+#[test]
+fn test_invocation_open_args() {
+    for cmd in [
+        "ls | xargs rm",
+        "xargs -I {} sudo rm {}",
+        "find . -exec rm {} +",
+        "find . -ok rm {} ;",
+        "parallel rm ::: a b",
+    ] {
+        assert!(first(cmd, "rm", &[]).open, "{cmd}");
+    }
+    for cmd in ["rm a", "sudo rm a", "echo $(rm a)", "xargs sh -c 'rm a'"] {
+        assert!(!first(cmd, "rm", &[]).open, "{cmd}");
+    }
+}
+
 // ── Fail closed ─────────────────────────────────────────────────────────────
 
 #[test]

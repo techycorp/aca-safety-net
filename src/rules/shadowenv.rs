@@ -8,7 +8,6 @@
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
 use crate::shell::exec_sites::ExecSites;
 
 use super::tool_gate;
@@ -41,34 +40,6 @@ fn shadowenv_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Per-segment dispatch: block any `shadowenv ...` invocation not allowed by
-/// `[tools.shadowenv]`.
-pub fn analyze_shadowenv(tokens: &[Token], config: &CompiledConfig) -> Decision {
-    let words: Vec<&str> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Word(w) => Some(w.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    if words.is_empty() {
-        return Decision::allow();
-    }
-
-    let basename = words[0].rsplit('/').next().unwrap_or(words[0]);
-    if basename != "shadowenv" {
-        return Decision::allow();
-    }
-
-    if tool_gate::allows(TOOL, tool_gate::segment_subcommand(&words), config) {
-        return Decision::allow();
-    }
-    let subcommand = words.get(1).copied().unwrap_or("");
-    let (rule, reason) = shadowenv_subcommand_info(subcommand);
-    Decision::block(rule, reason)
-}
-
 /// Whole-command analysis: blocks every place the command would run
 /// shadowenv, including substitutions, `bash -c` strings and wrappers. Every
 /// invocation must be allowed by `[tools.shadowenv]` for the command to pass.
@@ -86,7 +57,6 @@ pub fn analyze_shadowenv_raw(sites: &ExecSites, config: &CompiledConfig) -> Deci
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::shell::tokenize;
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
@@ -104,7 +74,7 @@ mod tests {
         }
         .compile()
         .unwrap();
-        assert!(!analyze_shadowenv(&tokenize("shadowenv trust"), &c).is_blocked());
+        assert!(!raw("shadowenv trust", &c).is_blocked());
         assert!(!raw(r#"eval "$(shadowenv hook bash)""#, &c).is_blocked());
     }
 
@@ -112,63 +82,61 @@ mod tests {
 
     #[test]
     fn test_bare_shadowenv() {
-        assert!(analyze_shadowenv(&tokenize("shadowenv"), &cfg()).is_blocked());
+        assert!(raw("shadowenv", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_shadowenv_hook() {
-        assert!(analyze_shadowenv(&tokenize("shadowenv hook bash"), &cfg()).is_blocked());
+        assert!(raw("shadowenv hook bash", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_shadowenv_exec() {
-        assert!(analyze_shadowenv(&tokenize("shadowenv exec -- ls"), &cfg()).is_blocked());
+        assert!(raw("shadowenv exec -- ls", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_shadowenv_trust() {
-        assert!(analyze_shadowenv(&tokenize("shadowenv trust"), &cfg()).is_blocked());
+        assert!(raw("shadowenv trust", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_shadowenv_diff() {
-        assert!(analyze_shadowenv(&tokenize("shadowenv diff"), &cfg()).is_blocked());
+        assert!(raw("shadowenv diff", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_shadowenv_help_blocked() {
-        assert!(analyze_shadowenv(&tokenize("shadowenv help"), &cfg()).is_blocked());
+        assert!(raw("shadowenv help", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_shadowenv_path_invocation() {
-        assert!(
-            analyze_shadowenv(&tokenize("/opt/homebrew/bin/shadowenv hook"), &cfg()).is_blocked()
-        );
+        assert!(raw("/opt/homebrew/bin/shadowenv hook", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_not_shadowenv() {
-        assert!(!analyze_shadowenv(&tokenize("ls -la"), &cfg()).is_blocked());
+        assert!(!raw("ls -la", &cfg()).is_blocked());
     }
 
     // ── Subcommand-specific reasons ─────────────────────────────────────────
 
     #[test]
     fn test_hook_reason() {
-        let d = analyze_shadowenv(&tokenize("shadowenv hook bash"), &cfg());
+        let d = raw("shadowenv hook bash", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "shadowenv.hook");
     }
 
     #[test]
     fn test_exec_reason() {
-        let d = analyze_shadowenv(&tokenize("shadowenv exec -- ls"), &cfg());
+        let d = raw("shadowenv exec -- ls", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "shadowenv.exec");
     }
 
     #[test]
     fn test_default_reason() {
-        let d = analyze_shadowenv(&tokenize("shadowenv help"), &cfg());
+        let d = raw("shadowenv help", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "shadowenv.blocked");
     }
 

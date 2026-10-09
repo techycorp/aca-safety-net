@@ -181,9 +181,9 @@ path = "~/.config/aca-safety-net/audit.log"
 - Certificates: `*.pem`, `*.key`
 - History files: `.bash_history`, `.zsh_history`
 
-### Env-Loading Tools (Bash)
+### How Bash Commands Are Checked
 
-`infisical`, `direnv`, `mise`, `shadowenv`, `env`, `printenv` and `gprintenv` are blocked wherever the shell would **run** them, and allowed where they only appear as data (`grep -i mise src`, `brew install direnv`, `git commit -m "fix infisical"`, `cat src/rules/env.rs`).
+Every tool rule below (env-loading tools, cloud CLIs, git, rm, find, uv, pipenv; everything except the ssh rules) checks each place the shell would **run** the tool. A tool that only appears as data is allowed (`grep -i mise src`, `brew install direnv`, `git commit -m "fix infisical"`, `grep 'kubectl get secret' runbook.md`).
 
 The command is parsed, not regex-matched:
 
@@ -193,9 +193,14 @@ The command is parsed, not regex-matched:
 - **Wrappers:** `sudo`, `timeout`, `nohup`, `xargs`, `find -exec`, `env`, `nice`, `strace`, `gdb --args`, `docker run|exec`, `kubectl exec`, `npx`/`uvx`/`pnpm dlx` (the package spec counts), `uv run`, `op run`, `mise exec`, `direnv exec`, `nix shell -c`, and more are looked through.
 - **Code strings:** `bash -c`, `eval`, `su -c`, `ssh host CMD`, `watch`, `trap`, `alias`, assignment values (`GIT_SSH_COMMAND=...`), `git -c alias.x=!...`, `ssh -o ProxyCommand=...`, `rsync -e`, `tar --to-command`, and similar are parsed as shell. Text piped or redirected into a shell (`... | sh`, `bash <<EOF`) is searched for the name anywhere. Interpreter code (`python -c`, `perl -e`, `awk`, `sed .../e`, ...) is blocked when it names the tool and can start a process.
 - **Unknown wrappers:** `somewrapper direnv allow` is blocked when the tool is followed by one of its known subcommands (for mise, only the secret-exposing ones).
-- **Fail closed:** text that can't be parsed, or nests too deeply, is searched for the name anywhere. Comments are checked both as comments and as code.
+- **Global flags:** flags before or between subcommands are skipped (`kubectl -n prod get secret`, `gcloud --project p secrets versions access`, `git -C repo reset --hard`). An unknown flag is tried both as a switch and as taking a value.
+- **Fail closed:** text that can't be parsed, or nests too deeply, is searched for the name anywhere, and the words after it are checked. Comments are checked both as comments and as code. A secret-printing CLI whose arguments can't be seen (`... | xargs gcloud auth`, a container image like `amazon/aws-cli`) is blocked.
 
 Side effects of failing closed: an assignment whose value is the tool name (`X=mise`) is blocked, and a comment that mentions the tool and contains an unbalanced quote may be blocked.
+
+### Env-Loading Tools (Bash)
+
+`infisical`, `direnv`, `mise` (secret-exposing subcommands), `shadowenv`, `env`, `printenv` and `gprintenv` are blocked wherever the shell would run them.
 
 ### Environment Exposure (Bash)
 
@@ -213,7 +218,9 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `git branch -D` (force delete)
 - `git stash drop`, `git stash clear`
 - `git clean -f`
-- `git add .env` (blocks staging sensitive files)
+- `git add .env` (blocks staging sensitive files; off with `[git] block_add_sensitive = false`)
+
+Combined short flags count (`git clean -fd`, `git push -fu origin main`, `git branch -d -f`).
 
 ### Dangerous rm Operations
 
@@ -221,18 +228,18 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `rm -rf` outside current working directory
 - `rm -rf ../../..` (parent traversal)
 - Allowed: `rm -rf` in cwd or `/tmp`
-
-### Dangerous find/xargs/parallel
-
+- Any `rm` whose targets are supplied at runtime: `xargs rm`, `find -exec rm {} +`, `find -ok rm`, `parallel rm` (`rm.unknown_targets`)
 - `find -delete`
-- `find -exec rm`
-- `xargs rm`
-- `parallel rm`
 
 ### Cloud CLI Secret Exposure
 
+These are blocked in **every** context, including when the output is passed as an argument (`curl -d "$(gcloud secrets versions access ...)"`, `helm --set pw=$(kubectl get secret ...)`) or assigned to a variable. Once the agent can mint a credential into a command, it can come back through `curl -v`, `set -x`, error output or logs, and the agent can act as that identity. Ask the user to run these.
+
+#### Kubernetes
+- `kubectl get secret` / `secrets` / `secret/NAME` / `secrets,configmaps` (also the `k` alias in command position)
+
 #### Heroku
-- `heroku auth:token` (exposes auth token)
+- `heroku auth:token` (the long-lived API token, unlike the short-lived cloud tokens below)
 - `heroku config` / `heroku config:get` (exposes env vars)
 - `heroku pg:credentials` / `heroku redis:credentials` (database credentials)
 
@@ -241,15 +248,19 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `aws ssm get-parameter --with-decryption` (decrypts parameters)
 - `aws kms decrypt` (decrypts data)
 - `aws iam list-access-keys` / `aws iam create-access-key` (access key exposure)
-- `aws sts get-session-token` / `aws sts assume-role` (temporary credentials)
 - `aws configure export-credentials` (exports credentials)
+- **Allowed on purpose:** `aws sts get-session-token` and `aws sts assume-role`. They return temporary credentials that expire on their own, not the long-lived keys in `~/.aws/credentials`, which stay blocked.
 
 #### GCloud
-- `gcloud auth print-access-token` / `gcloud auth print-identity-token` (token exposure)
-- `gcloud auth application-default print-access-token` (ADC token)
 - `gcloud secrets versions access` (retrieves secret values)
+- `gcloud sql users set-password --password=...` (password in the command)
+- **Allowed on purpose:** `gcloud auth print-access-token`, `gcloud auth print-identity-token` and `gcloud auth application-default print-access-token`. They print short-lived tokens (about an hour by default), not the refresh token or service-account key behind them, which stay blocked along with `~/.config/gcloud/`.
 
-**Allowed**: Non-secret queries like `aws s3 ls`, `gcloud config list`, `heroku apps`
+#### Azure
+- Commands that print tokens, keys, connection strings, SAS tokens or secrets, e.g. `az keyvault secret show`, `az storage account keys list`, `az webapp config appsettings list` (see `src/rules/azure.rs` for the full list)
+- **Allowed on purpose:** `az account get-access-token`. It prints a short-lived access token (about an hour), not the refresh token or service-principal secret behind it.
+
+**Allowed**: Non-secret queries like `aws s3 ls`, `gcloud config list`, `kubectl get pods`, `az group list`, `heroku apps`
 
 ## Dependency File Protection
 
@@ -398,7 +409,7 @@ action = "allow"
 
 1. Claude Code invokes the hook via stdin (JSON with `tool_name`, `tool_input`)
 2. Hook loads hardcoded defaults, then merges optional config from `~/.config/aca-safety-net/config.toml` (may relax) + `.security-hook.toml` (may only tighten). Config warnings are printed to stderr.
-3. For Bash: parses command, strips wrappers, checks deny rules + sensitive patterns
+3. For Bash: checks deny rules and sensitive patterns, then parses the command into every place it runs a program and checks each tool rule there
 4. For Read: checks file path against sensitive patterns
 5. For Edit/Write: checks if file matches dependency patterns (returns "ask" for approval)
 6. Exit 0 = allow, Exit 2 = block (message shown to Claude)
@@ -426,14 +437,13 @@ stdin JSON → Parse HookInput → Load Config
       1. Check deny rules              1. Check deny rules
       2. Paranoid mode check           2. Sensitive patterns
       3. Read cmd + sensitive          3. Decision
-      4. Git add sensitive                     ↓
-      5. Split commands              Allow or Block
-      6. Analyze segments
-            │
-      ┌─────┴─────┐
-      ▼           ▼
-   git/rm/    Recursive
-   find/xargs  bash -c
+      4. Parse exec sites                      ↓
+         ($(), bash -c, wrappers,    Allow or Block
+          xargs, find -exec, ...)
+      5. Tool rules on each site
+         (cloud CLIs, env tools,
+          git, rm, find, uv, pipenv)
+      6. ssh rules
 ```
 
 ## Known Limitations
@@ -446,13 +456,14 @@ Cannot detect or prevent:
 - Shell aliases
 - Encoded/obfuscated commands
 
-For the env-loading tools specifically, these are out of scope:
+For the tool rules (env-loading tools, cloud CLIs, git, rm, ...), these are out of scope:
 - Execution from files: `source f`, scripts, Makefiles, `just` recipes, `package.json` scripts, git config aliases, container image entrypoints, cron
 - A variable as the command: `X=mise; $X env` (the assignment itself is blocked, but `$X` from the environment is not)
 - Names assembled at runtime: `$(printf 'mi%s' 'se')`, base64, `rev`
 - Renamed or copied binaries, and shell functions or aliases defined earlier in the session
 - History re-execution (`!!`, `fc`)
 - Remote environment semantics: a command run over `ssh` or in a container is checked as if it ran locally
+- Commands run remotely by a tool's own subcommand, e.g. `heroku run printenv`
 
 This is static analysis only - it cannot execute commands to determine their actual behavior.
 

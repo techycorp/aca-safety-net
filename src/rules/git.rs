@@ -2,24 +2,46 @@
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
+use crate::shell::exec_sites::ExecSites;
 
-/// Analyze a git command for dangerous operations.
-pub fn analyze_git(tokens: &[Token], config: &CompiledConfig) -> Decision {
-    let words: Vec<&str> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Word(w) => Some(w.as_str()),
-            _ => None,
-        })
-        .collect();
+/// Subcommands with checks, for the `<unknown-cmd> ... git sub` heuristic.
+const SUBCOMMANDS: &[&str] = &[
+    "checkout", "reset", "push", "branch", "stash", "clean", "add",
+];
 
-    if words.len() < 2 {
-        return Decision::allow();
+/// Global options before the subcommand that take a separate value.
+const GLOBAL_VALUE_FLAGS: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--config-env",
+];
+
+/// Check every place the command would run git, including nested and
+/// wrapped forms.
+pub fn analyze_git(sites: &ExecSites, config: &CompiledConfig) -> Decision {
+    for inv in sites.invocations(&["git"], SUBCOMMANDS) {
+        let words: Vec<&str> = inv.argv.iter().map(String::as_str).collect();
+        let decision = analyze_git_words(&words, config);
+        if decision.is_blocked() {
+            return decision;
+        }
     }
+    Decision::allow()
+}
 
-    let subcommand = words[1];
-    let args = &words[2..];
+/// `words` are the arguments after `git`.
+fn analyze_git_words(words: &[&str], config: &CompiledConfig) -> Decision {
+    let mut i = 0;
+    while let Some(w) = words.get(i).filter(|w| w.starts_with('-')) {
+        i += if GLOBAL_VALUE_FLAGS.contains(w) { 2 } else { 1 };
+    }
+    let Some(&subcommand) = words.get(i) else {
+        return Decision::allow();
+    };
+    let args = &words[i + 1..];
 
     match subcommand {
         "checkout" => analyze_git_checkout(args, config),
@@ -33,6 +55,12 @@ pub fn analyze_git(tokens: &[Token], config: &CompiledConfig) -> Decision {
     }
 }
 
+/// Whether a short option `-c` is given, alone or in a cluster like `-fd`.
+fn has_short(args: &[&str], c: char) -> bool {
+    args.iter()
+        .any(|a| a.len() > 1 && a.starts_with('-') && !a.starts_with("--") && a[1..].contains(c))
+}
+
 fn analyze_git_checkout(args: &[&str], _config: &CompiledConfig) -> Decision {
     // Block: git checkout -- <paths> (discards changes)
     if args.contains(&"--") {
@@ -43,7 +71,7 @@ fn analyze_git_checkout(args: &[&str], _config: &CompiledConfig) -> Decision {
     }
 
     // Block: git checkout -f / --force
-    if args.contains(&"-f") || args.contains(&"--force") {
+    if has_short(args, 'f') || args.contains(&"--force") {
         return Decision::block(
             "git.checkout.force",
             "git checkout --force discards uncommitted changes",
@@ -68,11 +96,8 @@ fn analyze_git_reset(args: &[&str], _config: &CompiledConfig) -> Decision {
 fn analyze_git_push(args: &[&str], config: &CompiledConfig) -> Decision {
     // Check for force push
     let is_force = args.iter().any(|a| {
-        *a == "-f"
-            || *a == "--force"
-            || *a == "--force-with-lease"
-            || a.starts_with("--force-with-lease=")
-    });
+        *a == "--force" || *a == "--force-with-lease" || a.starts_with("--force-with-lease=")
+    }) || has_short(args, 'f');
 
     if !is_force {
         return Decision::allow();
@@ -135,7 +160,9 @@ fn analyze_git_push(args: &[&str], config: &CompiledConfig) -> Decision {
 
 fn analyze_git_branch(args: &[&str], _config: &CompiledConfig) -> Decision {
     // Block: git branch -D (force delete)
-    if args.contains(&"-D") {
+    let delete = has_short(args, 'd') || args.contains(&"--delete");
+    let force = has_short(args, 'f') || args.contains(&"--force");
+    if has_short(args, 'D') || (delete && force) {
         // Find branch name
         let branch = args.iter().find(|a| !a.starts_with('-'));
         return Decision::block(
@@ -170,9 +197,9 @@ fn analyze_git_stash(args: &[&str], _config: &CompiledConfig) -> Decision {
 
 fn analyze_git_clean(args: &[&str], _config: &CompiledConfig) -> Decision {
     // git clean -f is required to actually clean, but still dangerous
-    if args.contains(&"-f") || args.contains(&"--force") {
+    if has_short(args, 'f') || args.contains(&"--force") {
         // Extra dangerous with -d (directories) or -x (ignored files)
-        if args.contains(&"-d") || args.contains(&"-x") || args.contains(&"-X") {
+        if has_short(args, 'd') || has_short(args, 'x') || has_short(args, 'X') {
             return Decision::block(
                 "git.clean.force",
                 "git clean -fd/-fx permanently deletes untracked files/directories",
@@ -214,7 +241,6 @@ fn analyze_git_add(args: &[&str], config: &CompiledConfig) -> Decision {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::shell::tokenize;
 
     fn test_config() -> CompiledConfig {
         Config {
@@ -233,64 +259,90 @@ mod tests {
     #[test]
     fn test_git_checkout_discard() {
         let config = test_config();
-        let tokens = tokenize("git checkout -- file.txt");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git checkout -- file.txt"), &config);
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_git_reset_hard() {
         let config = test_config();
-        let tokens = tokenize("git reset --hard HEAD~1");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git reset --hard HEAD~1"), &config);
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_git_push_force_main() {
         let config = test_config();
-        let tokens = tokenize("git push -f origin main");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git push -f origin main"), &config);
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_git_push_force_allowed_branch() {
         let config = test_config();
-        let tokens = tokenize("git push -f origin feature-test");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(
+            &ExecSites::parse("git push -f origin feature-test"),
+            &config,
+        );
         assert!(!decision.is_blocked());
     }
 
     #[test]
     fn test_git_branch_delete() {
         let config = test_config();
-        let tokens = tokenize("git branch -D feature");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git branch -D feature"), &config);
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_git_stash_drop() {
         let config = test_config();
-        let tokens = tokenize("git stash drop");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git stash drop"), &config);
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_git_add_sensitive() {
         let config = test_config();
-        let tokens = tokenize("git add .env");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git add .env"), &config);
         assert!(decision.is_blocked());
     }
 
     #[test]
     fn test_git_add_normal() {
         let config = test_config();
-        let tokens = tokenize("git add src/main.rs");
-        let decision = analyze_git(&tokens, &config);
+        let decision = analyze_git(&ExecSites::parse("git add src/main.rs"), &config);
         assert!(!decision.is_blocked());
+    }
+
+    #[test]
+    fn test_global_flags_and_nesting() {
+        let config = test_config();
+        for cmd in [
+            "git -C repo reset --hard",
+            "git -c core.x=y --no-pager reset --hard",
+            "cd x\ngit reset --hard",
+            "echo $(git stash clear)",
+            "bash -lc 'git push --force origin main'",
+            "/usr/bin/git clean -fd",
+            "git push -fu origin main",
+            "git branch -d -f feature",
+            "git checkout -qf main",
+        ] {
+            assert!(
+                analyze_git(&ExecSites::parse(cmd), &config).is_blocked(),
+                "{cmd}"
+            );
+        }
+        for cmd in [
+            "git -C repo status",
+            "git commit -m 'avoid git reset --hard'",
+            "grep 'git push -f' notes.md",
+        ] {
+            assert!(
+                !analyze_git(&ExecSites::parse(cmd), &config).is_blocked(),
+                "{cmd}"
+            );
+        }
     }
 }

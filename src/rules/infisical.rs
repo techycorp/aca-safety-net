@@ -6,9 +6,7 @@
 //! them to stdout (`infisical secrets get`, `infisical export`). Every use
 //! involves real secret values, so we block at the top level.
 
-use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
 use crate::shell::exec_sites::ExecSites;
 
 /// Known subcommands, for spotting `<unknown wrapper> infisical <subcommand>`.
@@ -65,30 +63,6 @@ fn infisical_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Per-segment dispatch: block any `infisical ...` invocation.
-pub fn analyze_infisical(tokens: &[Token], _config: &CompiledConfig) -> Decision {
-    let words: Vec<&str> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Word(w) => Some(w.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    if words.is_empty() {
-        return Decision::allow();
-    }
-
-    let basename = words[0].rsplit('/').next().unwrap_or(words[0]);
-    if basename != "infisical" {
-        return Decision::allow();
-    }
-
-    let subcommand = words.get(1).copied().unwrap_or("");
-    let (rule, reason) = infisical_subcommand_info(subcommand);
-    Decision::block(rule, reason)
-}
-
 /// Whole-command analysis: blocks every place the command would run
 /// infisical, including substitutions, `bash -c` strings and wrappers.
 pub fn analyze_infisical_raw(sites: &ExecSites) -> Decision {
@@ -106,12 +80,6 @@ pub fn analyze_infisical_raw(sites: &ExecSites) -> Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::shell::tokenize;
-
-    fn cfg() -> CompiledConfig {
-        Config::default().compile().unwrap()
-    }
 
     fn raw(cmd: &str) -> Decision {
         analyze_infisical_raw(&ExecSites::parse(cmd))
@@ -121,74 +89,68 @@ mod tests {
 
     #[test]
     fn test_bare_infisical() {
-        assert!(analyze_infisical(&tokenize("infisical"), &cfg()).is_blocked());
+        assert!(raw("infisical").is_blocked());
     }
 
     #[test]
     fn test_infisical_run() {
-        assert!(
-            analyze_infisical(&tokenize("infisical run -- python script.py"), &cfg()).is_blocked()
-        );
+        assert!(raw("infisical run -- python script.py").is_blocked());
     }
 
     #[test]
     fn test_infisical_secrets() {
-        assert!(analyze_infisical(&tokenize("infisical secrets get FOO"), &cfg()).is_blocked());
+        assert!(raw("infisical secrets get FOO").is_blocked());
     }
 
     #[test]
     fn test_infisical_export() {
-        assert!(
-            analyze_infisical(&tokenize("infisical export --format dotenv"), &cfg()).is_blocked()
-        );
+        assert!(raw("infisical export --format dotenv").is_blocked());
     }
 
     #[test]
     fn test_infisical_login() {
-        assert!(analyze_infisical(&tokenize("infisical login"), &cfg()).is_blocked());
+        assert!(raw("infisical login").is_blocked());
     }
 
     #[test]
     fn test_infisical_init_blocked_too() {
         // Even seemingly-safe subcommands are blocked.
-        assert!(analyze_infisical(&tokenize("infisical init"), &cfg()).is_blocked());
+        assert!(raw("infisical init").is_blocked());
     }
 
     #[test]
     fn test_infisical_path_invocation() {
-        assert!(
-            analyze_infisical(&tokenize("/opt/homebrew/bin/infisical run"), &cfg()).is_blocked()
-        );
+        assert!(raw("/opt/homebrew/bin/infisical run").is_blocked());
     }
 
     #[test]
     fn test_not_infisical() {
-        assert!(!analyze_infisical(&tokenize("ls -la"), &cfg()).is_blocked());
+        assert!(!raw("ls -la").is_blocked());
     }
 
     // ── Subcommand-specific reasons ─────────────────────────────────────────
 
     #[test]
     fn test_run_reason() {
-        let d = analyze_infisical(&tokenize("infisical run -- ls"), &cfg());
+        let d = raw("infisical run -- ls");
         assert_eq!(d.block_info().unwrap().rule, "infisical.run");
     }
 
     #[test]
     fn test_secrets_reason() {
-        let d = analyze_infisical(&tokenize("infisical secrets get X"), &cfg());
+        let d = raw("infisical secrets get X");
         assert_eq!(d.block_info().unwrap().rule, "infisical.secrets");
     }
 
     #[test]
     fn test_export_reason() {
-        let d = analyze_infisical(&tokenize("infisical export"), &cfg());
+        let d = raw("infisical export");
         assert_eq!(d.block_info().unwrap().rule, "infisical.export");
     }
 
     #[test]
     fn test_default_reason() {
-        let d = analyze_infisical(&tokenize("infisical init"), &cfg());
+        let d = raw("infisical init");
         assert_eq!(d.block_info().unwrap().rule, "infisical.blocked");
     }
 

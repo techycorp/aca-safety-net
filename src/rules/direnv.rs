@@ -8,7 +8,6 @@
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::Token;
 use crate::shell::exec_sites::ExecSites;
 
 use super::tool_gate;
@@ -59,29 +58,6 @@ fn direnv_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Per-segment dispatch: block any `direnv ...` invocation not allowed by
-/// `[tools.direnv]`.
-pub fn analyze_direnv(tokens: &[Token], config: &CompiledConfig) -> Decision {
-    let words: Vec<&str> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Word(w) => Some(w.as_str()),
-            _ => None,
-        })
-        .collect();
-
-    if words.is_empty() || words[0] != "direnv" {
-        return Decision::allow();
-    }
-
-    if tool_gate::allows(TOOL, tool_gate::segment_subcommand(&words), config) {
-        return Decision::allow();
-    }
-    let subcommand = words.get(1).copied().unwrap_or("");
-    let (rule, reason) = direnv_subcommand_info(subcommand);
-    Decision::block(rule, reason)
-}
-
 /// Whole-command analysis: blocks every place the command would run direnv,
 /// including substitutions, `bash -c` strings and wrappers. Every
 /// invocation must be allowed by `[tools.direnv]` for the command to pass.
@@ -99,7 +75,6 @@ pub fn analyze_direnv_raw(sites: &ExecSites, config: &CompiledConfig) -> Decisio
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::shell::tokenize;
 
     fn cfg() -> CompiledConfig {
         Config::default().compile().unwrap()
@@ -120,7 +95,7 @@ mod tests {
             },
         );
         let c = config.compile().unwrap();
-        assert!(!analyze_direnv(&tokenize("direnv allow"), &c).is_blocked());
+        assert!(!raw("direnv allow", &c).is_blocked());
         assert!(!raw(r#"eval "$(direnv hook zsh)""#, &c).is_blocked());
     }
 
@@ -135,7 +110,7 @@ mod tests {
             },
         );
         let c = config.compile().unwrap();
-        assert!(!analyze_direnv(&tokenize("direnv allow"), &c).is_blocked());
+        assert!(!raw("direnv allow", &c).is_blocked());
         assert!(!raw("direnv allow", &c).is_blocked());
         assert!(raw("direnv allow && direnv export bash", &c).is_blocked());
     }
@@ -144,84 +119,84 @@ mod tests {
 
     #[test]
     fn test_bare_direnv() {
-        assert!(analyze_direnv(&tokenize("direnv"), &cfg()).is_blocked());
+        assert!(raw("direnv", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_exec_env() {
-        assert!(analyze_direnv(&tokenize("direnv exec . env"), &cfg()).is_blocked());
+        assert!(raw("direnv exec . env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_exec_arbitrary() {
-        assert!(analyze_direnv(&tokenize("direnv exec /tmp/foo cat .env"), &cfg()).is_blocked());
+        assert!(raw("direnv exec /tmp/foo cat .env", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_export_bash() {
-        assert!(analyze_direnv(&tokenize("direnv export bash"), &cfg()).is_blocked());
+        assert!(raw("direnv export bash", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_export_zsh() {
-        assert!(analyze_direnv(&tokenize("direnv export zsh"), &cfg()).is_blocked());
+        assert!(raw("direnv export zsh", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_export_json() {
-        assert!(analyze_direnv(&tokenize("direnv export json"), &cfg()).is_blocked());
+        assert!(raw("direnv export json", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_dump() {
-        assert!(analyze_direnv(&tokenize("direnv dump"), &cfg()).is_blocked());
+        assert!(raw("direnv dump", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_allow_blocked_too() {
         // Even "safe" subcommands are blocked by policy.
-        assert!(analyze_direnv(&tokenize("direnv allow"), &cfg()).is_blocked());
+        assert!(raw("direnv allow", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_status_blocked_too() {
-        assert!(analyze_direnv(&tokenize("direnv status"), &cfg()).is_blocked());
+        assert!(raw("direnv status", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_direnv_version_blocked_too() {
-        assert!(analyze_direnv(&tokenize("direnv version"), &cfg()).is_blocked());
+        assert!(raw("direnv version", &cfg()).is_blocked());
     }
 
     #[test]
     fn test_not_direnv() {
         // Other commands fall through.
-        assert!(!analyze_direnv(&tokenize("ls -la"), &cfg()).is_blocked());
+        assert!(!raw("ls -la", &cfg()).is_blocked());
     }
 
     // ── Subcommand-specific reasons ─────────────────────────────────────────
 
     #[test]
     fn test_exec_reason() {
-        let d = analyze_direnv(&tokenize("direnv exec . env"), &cfg());
+        let d = raw("direnv exec . env", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.exec");
     }
 
     #[test]
     fn test_export_reason() {
-        let d = analyze_direnv(&tokenize("direnv export bash"), &cfg());
+        let d = raw("direnv export bash", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.export");
     }
 
     #[test]
     fn test_dump_reason() {
-        let d = analyze_direnv(&tokenize("direnv dump"), &cfg());
+        let d = raw("direnv dump", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.dump");
     }
 
     #[test]
     fn test_default_reason() {
-        let d = analyze_direnv(&tokenize("direnv allow"), &cfg());
+        let d = raw("direnv allow", &cfg());
         assert_eq!(d.block_info().unwrap().rule, "direnv.blocked");
     }
 

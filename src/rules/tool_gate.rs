@@ -8,11 +8,6 @@
 
 use crate::config::CompiledConfig;
 
-/// The subcommand of a tokenized segment, if it is a plain word.
-pub fn segment_subcommand<'a>(words: &[&'a str]) -> Option<&'a str> {
-    words.get(1).copied().filter(|w| !w.starts_with('-'))
-}
-
 /// Whether the config allows this invocation of `tool`.
 pub fn allows(tool: &str, subcommand: Option<&str>, config: &CompiledConfig) -> bool {
     let tool_config = config.raw.tool_config(tool);
@@ -26,12 +21,6 @@ pub fn allows(tool: &str, subcommand: Option<&str>, config: &CompiledConfig) -> 
 mod tests {
     use super::*;
     use crate::config::{Config, ToolConfig};
-
-    #[test]
-    fn test_segment_subcommand_skips_flags() {
-        assert_eq!(segment_subcommand(&["foo", "--cd"]), None);
-        assert_eq!(segment_subcommand(&["foo", "ls"]), Some("ls"));
-    }
 
     fn cfg_with(tool: &str, tc: ToolConfig) -> CompiledConfig {
         let mut config = Config::default();
