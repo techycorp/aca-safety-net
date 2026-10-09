@@ -129,6 +129,7 @@ allow_subcommands = ["run"]   # allow these on top of the safe defaults
 - Explicit `[sensitive_groups]` / `[tools]` entries override the profile.
 - `allow_subcommands` matches the literal subcommand (`direnv allow`, `direnv "allow"`, also inside `$(...)` or `bash -c`). Flag-prefixed, variable, glob and command-word-substitution forms stay blocked. For mise, leading global flags (`-C dir`, `--cd=dir`, `-q`, ...) are skipped and aliases count as their full name (`r` is `run`).
 - `mise env` stays blocked even with mise disabled, because the `env` analyzer is always on.
+- `mise token` (prints your git provider token) and `mise mcp` (serves mise's env and config to a client) are always blocked; no profile or `[tools.mise]` setting allows them. So is a mise subcommand that can't be known before the command runs (`mise $SUB`, `mise $(...)`, an unknown global flag, `xargs mise`), since it could be one of those.
 
 ### mise
 

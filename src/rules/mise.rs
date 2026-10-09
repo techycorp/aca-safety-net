@@ -11,7 +11,7 @@
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
-use crate::shell::exec_sites::{ExecSites, Invocation};
+use crate::shell::exec_sites::{ExecSites, Invocation, SiteKind};
 
 use super::tool_gate;
 
@@ -123,16 +123,42 @@ fn canonical(sub: &str) -> &str {
     }
 }
 
-/// The canonical subcommand from the words after `mise`, skipping global
-/// flags. `None` when it can't be determined: a non-literal word, an unknown
-/// flag, or no subcommand at all.
-fn resolve_subcommand(args: &[Option<&str>]) -> Option<String> {
+/// What the words after `mise` say about its subcommand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Subcommand {
+    /// A subcommand, by canonical name.
+    Named(String),
+    /// No subcommand: plain `mise`, possibly with global flags.
+    Bare,
+    /// Can't be determined before the command runs: a non-literal word
+    /// (`$SUB`, `$(...)`), an unknown flag that may take the subcommand as
+    /// its value, or arguments supplied at runtime (`xargs mise`).
+    Unknown,
+}
+
+impl Subcommand {
+    fn name(&self) -> Option<&str> {
+        match self {
+            Subcommand::Named(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// The subcommand from the words after `mise`, skipping global flags. A
+/// `None` word is one that isn't literal.
+fn resolve_subcommand(args: &[Option<&str>]) -> Subcommand {
     let mut i = 0;
     loop {
-        let a = (*args.get(i)?)?;
+        let Some(&word) = args.get(i) else {
+            return Subcommand::Bare;
+        };
+        let Some(a) = word else {
+            return Subcommand::Unknown;
+        };
         match a {
-            "--version" | "-V" => return Some("version".to_string()),
-            "-h" | "--help" => return Some("help".to_string()),
+            "--version" | "-V" => return Subcommand::Named("version".to_string()),
+            "-h" | "--help" => return Subcommand::Named("help".to_string()),
             _ if GLOBAL_VALUE_FLAGS.contains(&a) => i += 2,
             _ if GLOBAL_FLAGS.contains(&a) => i += 1,
             _ if a
@@ -141,29 +167,52 @@ fn resolve_subcommand(args: &[Option<&str>]) -> Option<String> {
             {
                 i += 1
             }
-            _ if a.starts_with('-') => return None,
-            _ => return Some(canonical(a).to_string()),
+            _ if a.starts_with('-') => return Subcommand::Unknown,
+            _ => return Subcommand::Named(canonical(a).to_string()),
         }
     }
 }
 
-fn invocation_subcommand(inv: &Invocation) -> Option<String> {
-    let args = inv.args.as_ref()?;
-    let args: Vec<Option<&str>> = args.iter().map(|a| a.as_deref()).collect();
-    resolve_subcommand(&args)
+fn invocation_subcommand(inv: &Invocation) -> Subcommand {
+    if inv.open || inv.kind == SiteKind::Exact {
+        return Subcommand::Unknown;
+    }
+    match (&inv.args, inv.kind) {
+        (Some(args), _) => {
+            let args: Vec<Option<&str>> = args.iter().map(|a| a.as_deref()).collect();
+            resolve_subcommand(&args)
+        }
+        // The words found after the name in another command's arguments or in code.
+        (None, SiteKind::Adjacent | SiteKind::Opaque) => {
+            let args: Vec<Option<&str>> = inv.argv.iter().map(|a| Some(a.as_str())).collect();
+            resolve_subcommand(&args)
+        }
+        // A command word that isn't literal (`mis?`, `$M`).
+        (None, _) => Subcommand::Unknown,
+    }
 }
 
 /// Whether this invocation is `mise env`, in any alias or global-flag form.
 pub(crate) fn is_mise_env(inv: &Invocation) -> bool {
-    match &inv.args {
-        Some(_) => invocation_subcommand(inv).as_deref() == Some("env"),
-        None => inv.captured.as_deref().map(canonical) == Some("env"),
-    }
+    invocation_subcommand(inv).name() == Some("env")
 }
 
-fn allowed(subcommand: Option<&str>, config: &CompiledConfig) -> bool {
-    subcommand.is_some_and(|s| SAFE_SUBCOMMANDS.contains(&s))
-        || tool_gate::allows(TOOL, subcommand, config)
+/// Blocked whatever the config says, including `profile = "secretless"`,
+/// `enabled = false` and `allow_subcommands`. `token` prints the git
+/// provider token (e.g. GitHub), which isn't an env-file secret. `mcp` runs
+/// a server that hands mise's env and config to whoever talks to it.
+const ALWAYS_BLOCKED: &[&str] = &["token", "mcp"];
+
+fn allowed(subcommand: &Subcommand, config: &CompiledConfig) -> bool {
+    match subcommand {
+        Subcommand::Named(s) if ALWAYS_BLOCKED.contains(&s.as_str()) => false,
+        // It might be an always-blocked subcommand, so no config can allow it.
+        Subcommand::Unknown => false,
+        Subcommand::Named(s) => {
+            SAFE_SUBCOMMANDS.contains(&s.as_str()) || tool_gate::allows(TOOL, Some(s), config)
+        }
+        Subcommand::Bare => tool_gate::allows(TOOL, None, config),
+    }
 }
 
 fn mise_subcommand_info(subcommand: Option<&str>) -> (&'static str, String) {
@@ -227,10 +276,11 @@ fn mise_subcommand_info(subcommand: Option<&str>) -> (&'static str, String) {
 pub fn analyze_mise_raw(sites: &ExecSites, config: &CompiledConfig) -> Decision {
     for inv in sites.invocations(&[TOOL], SUBCOMMANDS) {
         let subcommand = invocation_subcommand(&inv);
-        if !allowed(subcommand.as_deref(), config) {
-            let shown =
-                subcommand.or_else(|| inv.captured.as_deref().map(|c| canonical(c).to_string()));
-            let (rule, reason) = mise_subcommand_info(shown.as_deref());
+        if !allowed(&subcommand, config) {
+            let shown = subcommand
+                .name()
+                .or_else(|| inv.captured.as_deref().map(canonical));
+            let (rule, reason) = mise_subcommand_info(shown);
             return Decision::block(rule, reason);
         }
     }
@@ -408,6 +458,63 @@ mod tests {
         let c = cfg_tool(true, &["run"]);
         let d = raw("mise run build && mise exec -- ls", &c);
         assert_eq!(rule(d), "mise.exec");
+    }
+
+    #[test]
+    fn test_always_blocked_ignores_config() {
+        let secretless = Config {
+            profile: Some("secretless".to_string()),
+            ..Default::default()
+        }
+        .compile()
+        .unwrap();
+        // Everything else is still relaxed.
+        assert!(!raw("mise run build", &secretless).is_blocked());
+        for c in [
+            cfg_tool(false, &[]),
+            cfg_tool(true, &["token", "mcp"]),
+            secretless,
+        ] {
+            for cmd in [
+                "mise token github",
+                "mise -q token",
+                "echo $(mise token)",
+                "mise mcp",
+            ] {
+                assert!(raw(cmd, &c).is_blocked(), "{cmd}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_unknown_subcommand_blocked_under_any_config() {
+        let secretless = Config {
+            profile: Some("secretless".to_string()),
+            ..Default::default()
+        }
+        .compile()
+        .unwrap();
+        for c in [cfg_tool(false, &[]), secretless] {
+            for cmd in [
+                "mise $SUB",
+                "mise $(echo token)",
+                "mise \"$X\" github",
+                "mise --unknown-flag token",
+                "mis? token",
+                "echo token | xargs mise",
+            ] {
+                assert!(raw(cmd, &c).is_blocked(), "{cmd}");
+            }
+            for cmd in [
+                "mise",
+                "mise -q",
+                "mise run build",
+                "mise -C dir use node@20",
+                r#"python -c 'import subprocess; subprocess.run(["mise", "install"])'"#,
+            ] {
+                assert!(!raw(cmd, &c).is_blocked(), "{cmd}");
+            }
+        }
     }
 
     #[test]

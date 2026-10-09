@@ -28,7 +28,8 @@ sensitive_files = []
 # subcommands that can expose secrets (env, exec, run, set, token, ...).
 # Disable a tool's block, or allow more subcommands. Flag-prefixed, variable
 # and glob forms never match an allowed subcommand.
-# infisical and env/printenv are always blocked and not configurable.
+# infisical, env/printenv, `mise token` and `mise mcp` are always blocked
+# and not configurable.
 # [tools.direnv]
 # enabled = false
 # [tools.mise]
