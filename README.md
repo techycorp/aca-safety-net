@@ -73,7 +73,7 @@ The following protections are always active:
   - `ssh`: everything under `.ssh/` except `*.pub`, `config`, `known_hosts`, `authorized_keys` (readable, never writable)
   - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`
   - `history`: `_history`, `.bash_history`, `.zsh_history`
-- **Env-loading tools** (toggleable): `direnv`, `mise`, `shadowenv`
+- **Env-loading tools** (toggleable): `direnv`, `shadowenv`, and the secret-exposing `mise` subcommands (see [mise](#mise))
 - **Always locked**: `infisical`, `env`, `printenv`
 - **Read commands**: `cat`, `head`, `tail`, `less`, `more`, `grep`, `rg`, `ag`, `sed`, `awk`, `strings`, `xxd`, `hexdump`, `bat`, `view`
 - **Deny rules**: `set`, `declare -x`, `export`, `history`, `/proc/*/environ`, `ps -E`/`ps auxe`, docker/podman env exposure and inspect, agent writes to the hook's own config files
@@ -123,12 +123,22 @@ env_files = false        # .env, .envrc readable/stageable
 enabled = false          # allow all direnv commands
 
 [tools.mise]
-allow_subcommands = ["install", "use", "ls"]   # allow only these
+allow_subcommands = ["run"]   # allow these on top of the safe defaults
 ```
 
 - Explicit `[sensitive_groups]` / `[tools]` entries override the profile.
-- `allow_subcommands` matches the literal word right after the tool (`mise install`, `mise "install"`, also inside `$(...)` or `bash -c`). Flag-prefixed (`mise --cd x install`), variable, glob and command-word-substitution forms stay blocked.
+- `allow_subcommands` matches the literal subcommand (`direnv allow`, `direnv "allow"`, also inside `$(...)` or `bash -c`). Flag-prefixed, variable, glob and command-word-substitution forms stay blocked. For mise, leading global flags (`-C dir`, `--cd=dir`, `-q`, ...) are skipped and aliases count as their full name (`r` is `run`).
 - `mise env` stays blocked even with mise disabled, because the `env` analyzer is always on.
+
+### mise
+
+mise is allowed except for subcommands that can expose secrets. Based on `mise --help` for mise 2026.10.3.
+
+- **Blocked:** `env`, `hook-env`, `set` (lists and reads values), `config` (`config get`), `exec`/`x`, `en`, `run`/`r`, `watch`, `tasks`, `token` (prints git provider tokens), `mcp` (serves env values), `ssh`, `bootstrap`, `deps`, `daemons`, `oci`, `tool-stub`, `test-tool`. Also `doctor`, `settings`, `generate`, `edit` and `dotfiles`, which may show config or file contents and aren't verified safe.
+- **Unknown subcommands are blocked**, because `mise <name>` runs the task of that name. A bare `mise`, or one whose subcommand can't be determined (`mise $X`), is blocked too.
+- **Allowed:** everything else, e.g. `install`, `use`, `ls`, `ls-remote`, `which`, `where`, `latest`, `outdated`, `upgrade`, `prune`, `plugins`, `trust`, `activate`, `shell`, `version`, `help`.
+- Reading mise config files stays blocked by the `mise` sensitive group.
+- Caveats: `install`/`use` run plugin code and `[hooks]` from config, `trust` lets a config run `{{exec(...)}}` templates, and `implode` uninstalls mise. None print secrets on their own.
 - Unknown group, tool or profile names produce a warning and leave protection on.
 - If your user config lists a built-in pattern in `sensitive_files` (older installs copied all defaults there), that copy keeps blocking after its group is disabled. A warning tells you which to remove.
 
@@ -182,7 +192,7 @@ The command is parsed, not regex-matched:
 - **Obfuscation:** quote removal (`'infi''sical'`), backslash escapes, `$'\x69...'`, case (`Infisical`), paths (`/opt/bin/mise`, `=mise`), brace expansion (`{mise,x}`) and globs (`mis?`) are resolved before matching.
 - **Wrappers:** `sudo`, `timeout`, `nohup`, `xargs`, `find -exec`, `env`, `nice`, `strace`, `gdb --args`, `docker run|exec`, `kubectl exec`, `npx`/`uvx`/`pnpm dlx` (the package spec counts), `uv run`, `op run`, `mise exec`, `direnv exec`, `nix shell -c`, and more are looked through.
 - **Code strings:** `bash -c`, `eval`, `su -c`, `ssh host CMD`, `watch`, `trap`, `alias`, assignment values (`GIT_SSH_COMMAND=...`), `git -c alias.x=!...`, `ssh -o ProxyCommand=...`, `rsync -e`, `tar --to-command`, and similar are parsed as shell. Text piped or redirected into a shell (`... | sh`, `bash <<EOF`) is searched for the name anywhere. Interpreter code (`python -c`, `perl -e`, `awk`, `sed .../e`, ...) is blocked when it names the tool and can start a process.
-- **Unknown wrappers:** `somewrapper mise install` is blocked when the tool is followed by one of its known subcommands.
+- **Unknown wrappers:** `somewrapper direnv allow` is blocked when the tool is followed by one of its known subcommands (for mise, only the secret-exposing ones).
 - **Fail closed:** text that can't be parsed, or nests too deeply, is searched for the name anywhere. Comments are checked both as comments and as code.
 
 Side effects of failing closed: an assignment whose value is the tool name (`X=mise`) is blocked, and a comment that mentions the tool and contains an unbalanced quote may be blocked.

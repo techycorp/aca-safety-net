@@ -62,9 +62,9 @@ pub fn analyze_env_raw(sites: &ExecSites) -> Decision {
         return Decision::block(rule, reason);
     }
     let mise_env = sites
-        .invocations(&["mise"], &["env"])
-        .into_iter()
-        .any(|inv| inv.captured.as_deref() == Some("env"));
+        .invocations(&["mise"], &["env", "e"])
+        .iter()
+        .any(super::mise::is_mise_env);
     if mise_env {
         return Decision::block(ENV_RULE, ENV_REASON);
     }

@@ -550,7 +550,7 @@ enabled = false
 // changes, these tests catch it.
 const DIRENV_REASON: &str = "direnv is blocked entirely";
 const ENV_REASON: &str = "env exposes environment variables";
-const MISE_REASON: &str = "mise is blocked entirely";
+const MISE_TASK_REASON: &str = "not a known safe subcommand";
 const PRINTENV_REASON: &str = "printenv dumps";
 const SHADOWENV_REASON: &str = "shadowenv loads per-directory";
 const INFISICAL_REASON: &str = "infisical";
@@ -747,18 +747,18 @@ fn test_no_config_blocks_mise_exec() {
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("mise exec loads .mise.toml"));
+        .stderr(predicate::str::contains("mise exec/en runs"));
 }
 
 #[test]
 fn test_no_config_blocks_mise_after_chain() {
     let dir = TempDir::new().unwrap();
-    let input = r#"{"tool_name":"Bash","tool_input":{"command":"cd /tmp && mise activate bash"}}"#;
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"cd /tmp && mise run build"}}"#;
     cmd_without_config(&dir)
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("mise activate emits"));
+        .stderr(predicate::str::contains("mise run/watch/tasks"));
 }
 
 #[test]
@@ -786,16 +786,32 @@ fn test_no_config_blocks_read_mise_toml() {
 // ── Catch-all subcommand still hits generic reason ──────────────────────
 
 #[test]
-fn test_no_config_blocks_mise_install_generic() {
-    // `install` isn't a recognized subcommand for reason-specialization,
-    // so the catch-all generic reason fires.
+fn test_no_config_allows_mise_install() {
     let dir = TempDir::new().unwrap();
     let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise install"}}"#;
+    cmd_without_config(&dir).write_stdin(input).assert().code(0);
+}
+
+#[test]
+fn test_no_config_blocks_mise_task_by_name() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise deploy"}}"#;
     cmd_without_config(&dir)
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains(MISE_REASON));
+        .stderr(predicate::str::contains(MISE_TASK_REASON));
+}
+
+#[test]
+fn test_no_config_blocks_mise_token() {
+    let dir = TempDir::new().unwrap();
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"mise token github"}}"#;
+    cmd_without_config(&dir)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mise token prints"));
 }
 
 // ── git add of sensitive configs ────────────────────────────────────────
@@ -872,12 +888,12 @@ fn test_no_config_blocks_timeout_mise() {
 #[test]
 fn test_no_config_blocks_nohup_mise() {
     let dir = TempDir::new().unwrap();
-    let input = r#"{"tool_name":"Bash","tool_input":{"command":"nohup mise activate bash"}}"#;
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"nohup mise run build"}}"#;
     cmd_without_config(&dir)
         .write_stdin(input)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("mise activate emits"));
+        .stderr(predicate::str::contains("mise run/watch/tasks"));
 }
 
 #[test]

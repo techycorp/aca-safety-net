@@ -24,14 +24,15 @@ sensitive_files = []
 # [sensitive_groups]
 # env_files = false
 
-# Env-loading tools (direnv, mise, shadowenv) are blocked by default.
-# Disable a tool's block, or allow specific subcommands. Subcommands only
-# match when written plainly (`mise install`), never quoted or in $(...).
+# direnv and shadowenv are blocked by default. mise is allowed except for
+# subcommands that can expose secrets (env, exec, run, set, token, ...).
+# Disable a tool's block, or allow more subcommands. Flag-prefixed, variable
+# and glob forms never match an allowed subcommand.
 # infisical and env/printenv are always blocked and not configurable.
 # [tools.direnv]
 # enabled = false
 # [tools.mise]
-# allow_subcommands = ["install", "use", "ls", "which"]
+# allow_subcommands = ["run"]
 
 # Preset for setups where secrets are injected at runtime (e.g.
 # `infisical run`) and env files hold none. Turns off the env_files,

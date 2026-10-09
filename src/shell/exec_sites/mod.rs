@@ -71,6 +71,9 @@ pub struct Invocation {
     pub captured: Option<String>,
     /// The subcommand, only when it is plainly written and certain. Used for allowlists.
     pub clean: Option<String>,
+    /// The words after the tool when it is a plain command word; `None` for
+    /// other sites. A word is `None` when it isn't literal (`$x`, globs).
+    pub args: Option<Vec<Option<String>>>,
 }
 
 /// The execution sites of one shell command.
@@ -113,6 +116,7 @@ fn match_site(site: &Site, name: &str, subcommands: &[&str], out: &mut Vec<Invoc
         name: name.to_string(),
         captured,
         clean,
+        args: None,
     };
     match site {
         Site::Command { argv, adjacency } => {
@@ -122,7 +126,16 @@ fn match_site(site: &Site, name: &str, subcommands: &[&str], out: &mut Vec<Invoc
                 let clean = next
                     .filter(|w| argv[0].literal() && w.literal())
                     .map(|w| w.text.clone());
-                out.push(hit(captured, clean));
+                let args = argv[0].literal().then(|| {
+                    argv[1..]
+                        .iter()
+                        .map(|w| w.literal().then(|| w.text.clone()))
+                        .collect()
+                });
+                out.push(Invocation {
+                    args,
+                    ..hit(captured, clean)
+                });
             }
             if *adjacency && !subcommands.is_empty() {
                 for pair in argv[1..].windows(2) {

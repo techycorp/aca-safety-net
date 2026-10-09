@@ -1,64 +1,229 @@
-//! mise analysis - blocks all mise invocations.
+//! mise analysis - blocks the mise subcommands that can expose secrets.
 //!
-//! mise (formerly rtx) loads per-directory environment from `.mise.toml`,
-//! `.mise.local.toml`, and `.env` files. Several subcommands dump that
-//! environment (`mise env`, `mise hook-env`, `mise exec`, `mise shell`).
-//! We block mise at the top level — same model as direnv — because the
-//! cost of a bypass is unbounded secret exposure and there is no
-//! agent-relevant use of mise that doesn't have a safer alternative.
+//! mise loads per-directory environment from `mise.toml`, `.mise.local.toml`
+//! and `.env` files, which routinely hold secrets. Subcommands that print
+//! that environment, print tokens, or run commands or tasks with it loaded
+//! are blocked. Everything else (installing and listing tools, etc.) is
+//! allowed. Unknown subcommands are blocked because `mise <name>` runs the
+//! task of that name.
+//!
+//! The subcommand lists match `mise --help` for mise 2026.10.3.
 
 use crate::config::CompiledConfig;
 use crate::decision::Decision;
 use crate::shell::Token;
-use crate::shell::exec_sites::ExecSites;
+use crate::shell::exec_sites::{ExecSites, Invocation};
 
 use super::tool_gate;
 
 const TOOL: &str = "mise";
 
-/// Known subcommands, for spotting `<unknown wrapper> mise <subcommand>`.
-const SUBCOMMANDS: &[&str] = &[
-    "env", "hook-env", "exec", "x", "shell", "activate", "settings", "config", "set", "install",
-    "use", "run",
+/// Subcommands that never print environment values, tokens or task bodies,
+/// and don't run commands with the environment loaded. Canonical names.
+const SAFE_SUBCOMMANDS: &[&str] = &[
+    "activate",
+    "backends",
+    "bin-paths",
+    "cache",
+    "completion",
+    "deactivate",
+    "fmt",
+    "help",
+    "implode",
+    "install",
+    "install-into",
+    "latest",
+    "link",
+    "lock",
+    "ls",
+    "ls-remote",
+    "outdated",
+    "packslip",
+    "patrons",
+    "plugins",
+    "prune",
+    "registry",
+    "reshim",
+    "search",
+    "self-update",
+    "shell",
+    "shell-alias",
+    "skills",
+    "sponsors",
+    "sync",
+    "tool",
+    "tool-alias",
+    "trust",
+    "uninstall",
+    "unset",
+    "untrust",
+    "unuse",
+    "upgrade",
+    "use",
+    "version",
+    "where",
+    "which",
 ];
 
-const GENERIC_REASON: &str =
-    "mise is blocked entirely because .mise.toml routinely contains secrets";
+/// Sensitive subcommands as written, for spotting `<unknown wrapper> mise <subcommand>`.
+const SUBCOMMANDS: &[&str] = &[
+    "env", "e", "hook-env", "exec", "x", "en", "run", "r", "watch", "w", "tasks", "task", "t",
+    "set", "ev", "env-vars", "config", "cfg", "toml", "token", "mcp",
+];
 
-/// Shared subcommand-to-(rule, reason) lookup used by both the per-segment
-/// dispatch and the raw analyzer.
-fn mise_subcommand_info(subcommand: &str) -> (&'static str, &'static str) {
-    match subcommand {
+/// Global flags that take a value.
+const GLOBAL_VALUE_FLAGS: &[&str] = &["-C", "--cd", "-E", "--env", "-j", "--jobs"];
+
+/// Global flags without a value.
+const GLOBAL_FLAGS: &[&str] = &[
+    "-q",
+    "--quiet",
+    "-v",
+    "-vv",
+    "--verbose",
+    "-y",
+    "--yes",
+    "--no-config",
+    "--no-env",
+    "--no-hooks",
+    "--raw",
+    "--locked",
+    "--silent",
+];
+
+fn canonical(sub: &str) -> &str {
+    match sub {
+        "e" => "env",
+        "x" => "exec",
+        "r" => "run",
+        "w" => "watch",
+        "t" | "task" => "tasks",
+        "cfg" | "toml" => "config",
+        "ev" | "env-vars" => "set",
+        "sh" => "shell",
+        "b" | "backend" | "backend-list" => "backends",
+        "complete" | "completions" => "completion",
+        "dr" => "doctor",
+        "gen" | "g" => "generate",
+        "i" => "install",
+        "ln" => "link",
+        "list" => "ls",
+        "list-all" | "list-remote" => "ls-remote",
+        "p" | "plugin" | "plugin-list" => "plugins",
+        "bs" => "bootstrap",
+        "daemon" => "daemons",
+        "dep" | "prepare" => "deps",
+        "dot" => "dotfiles",
+        "skill" => "skills",
+        "alias" | "aliases" => "tool-alias",
+        "rm" | "remove" => "unuse",
+        "up" => "upgrade",
+        "u" => "use",
+        "v" => "version",
+        other => other,
+    }
+}
+
+/// The canonical subcommand from the words after `mise`, skipping global
+/// flags. `None` when it can't be determined: a non-literal word, an unknown
+/// flag, or no subcommand at all.
+fn resolve_subcommand(args: &[Option<&str>]) -> Option<String> {
+    let mut i = 0;
+    loop {
+        let a = (*args.get(i)?)?;
+        match a {
+            "--version" | "-V" => return Some("version".to_string()),
+            "-h" | "--help" => return Some("help".to_string()),
+            _ if GLOBAL_VALUE_FLAGS.contains(&a) => i += 2,
+            _ if GLOBAL_FLAGS.contains(&a) => i += 1,
+            _ if a
+                .split_once('=')
+                .is_some_and(|(k, _)| k.starts_with("--") && GLOBAL_VALUE_FLAGS.contains(&k)) =>
+            {
+                i += 1
+            }
+            _ if a.starts_with('-') => return None,
+            _ => return Some(canonical(a).to_string()),
+        }
+    }
+}
+
+fn invocation_subcommand(inv: &Invocation) -> Option<String> {
+    let args = inv.args.as_ref()?;
+    let args: Vec<Option<&str>> = args.iter().map(|a| a.as_deref()).collect();
+    resolve_subcommand(&args)
+}
+
+/// Whether this invocation is `mise env`, in any alias or global-flag form.
+pub(crate) fn is_mise_env(inv: &Invocation) -> bool {
+    match &inv.args {
+        Some(_) => invocation_subcommand(inv).as_deref() == Some("env"),
+        None => inv.captured.as_deref().map(canonical) == Some("env"),
+    }
+}
+
+fn allowed(subcommand: Option<&str>, config: &CompiledConfig) -> bool {
+    subcommand.is_some_and(|s| SAFE_SUBCOMMANDS.contains(&s))
+        || tool_gate::allows(TOOL, subcommand, config)
+}
+
+fn mise_subcommand_info(subcommand: Option<&str>) -> (&'static str, String) {
+    let Some(sub) = subcommand else {
+        return (
+            "mise.blocked",
+            "mise is only allowed with a known safe subcommand, and this one could not be determined"
+                .to_string(),
+        );
+    };
+    let (rule, reason) = match sub {
         "env" => (
             "mise.env",
             "mise env dumps the loaded environment to stdout",
         ),
         "hook-env" => (
             "mise.hook_env",
-            "mise hook-env emits env mutations as shell code",
+            "mise hook-env emits the loaded environment as shell code",
         ),
-        "exec" => (
+        "exec" | "en" => (
             "mise.exec",
-            "mise exec loads .mise.toml and runs a command in that environment, exposing secrets",
+            "mise exec/en runs a command or shell with the mise environment loaded, exposing secrets",
         ),
-        "shell" => (
-            "mise.shell",
-            "mise shell modifies the current shell's environment from .mise.toml",
+        "run" | "watch" | "tasks" => (
+            "mise.run",
+            "mise run/watch/tasks run project tasks with the mise environment loaded, or print their definitions",
         ),
-        "activate" => (
-            "mise.activate",
-            "mise activate emits shell hook code that exposes env on every cd",
+        "set" => (
+            "mise.set",
+            "mise set lists or reads environment variable values from mise.toml",
         ),
-        "settings" | "config" => (
+        "config" => ("mise.config", "mise config get reads values from mise.toml"),
+        "token" => ("mise.token", "mise token prints git provider tokens"),
+        "mcp" => (
+            "mise.mcp",
+            "mise mcp serves the environment, including secrets, to its client",
+        ),
+        "ssh" | "bootstrap" | "deps" | "daemons" | "oci" | "tool-stub" | "test-tool" => (
+            "mise.exec",
+            "this mise subcommand runs commands or hooks with the mise environment loaded",
+        ),
+        "doctor" | "settings" | "generate" | "edit" | "dotfiles" => (
             "mise.config",
-            "mise settings/config can reveal loaded env config",
+            "this mise subcommand may show config or file contents and is not verified safe",
         ),
-        _ => ("mise.blocked", GENERIC_REASON),
-    }
+        _ => {
+            return (
+                "mise.task",
+                format!(
+                    "`mise {sub}` is not a known safe subcommand; mise runs unknown names as tasks with the mise environment loaded"
+                ),
+            );
+        }
+    };
+    (rule, reason.to_string())
 }
 
-/// Per-segment dispatch: block any `mise ...` invocation not allowed by
-/// `[tools.mise]`.
+/// Per-segment dispatch: block a `mise ...` segment whose subcommand is not
+/// safe and not allowed by `[tools.mise]`.
 pub fn analyze_mise(tokens: &[Token], config: &CompiledConfig) -> Decision {
     let words: Vec<&str> = tokens
         .iter()
@@ -77,21 +242,25 @@ pub fn analyze_mise(tokens: &[Token], config: &CompiledConfig) -> Decision {
         return Decision::allow();
     }
 
-    if tool_gate::allows(TOOL, tool_gate::segment_subcommand(&words), config) {
+    let args: Vec<Option<&str>> = words[1..].iter().map(|w| Some(*w)).collect();
+    let subcommand = resolve_subcommand(&args);
+    if allowed(subcommand.as_deref(), config) {
         return Decision::allow();
     }
-    let subcommand = words.get(1).copied().unwrap_or("");
-    let (rule, reason) = mise_subcommand_info(subcommand);
+    let (rule, reason) = mise_subcommand_info(subcommand.as_deref());
     Decision::block(rule, reason)
 }
 
-/// Whole-command analysis: blocks every place the command would run mise,
-/// including substitutions, `bash -c` strings and wrappers. Every
-/// invocation must be allowed by `[tools.mise]` for the command to pass.
+/// Whole-command analysis: checks every place the command would run mise,
+/// including substitutions, `bash -c` strings and wrappers. Each invocation
+/// must be a safe subcommand or allowed by `[tools.mise]`.
 pub fn analyze_mise_raw(sites: &ExecSites, config: &CompiledConfig) -> Decision {
     for inv in sites.invocations(&[TOOL], SUBCOMMANDS) {
-        if !tool_gate::allows(TOOL, inv.clean.as_deref(), config) {
-            let (rule, reason) = mise_subcommand_info(inv.captured.as_deref().unwrap_or(""));
+        let subcommand = invocation_subcommand(&inv);
+        if !allowed(subcommand.as_deref(), config) {
+            let shown =
+                subcommand.or_else(|| inv.captured.as_deref().map(|c| canonical(c).to_string()));
+            let (rule, reason) = mise_subcommand_info(shown.as_deref());
             return Decision::block(rule, reason);
         }
     }
@@ -112,6 +281,14 @@ mod tests {
         analyze_mise_raw(&ExecSites::parse(cmd), c)
     }
 
+    fn segment(cmd: &str) -> Decision {
+        analyze_mise(&tokenize(cmd), &cfg())
+    }
+
+    fn rule(d: Decision) -> String {
+        d.block_info().unwrap().rule.clone()
+    }
+
     fn cfg_tool(enabled: bool, allow: &[&str]) -> CompiledConfig {
         let mut config = Config::default();
         config.tools.insert(
@@ -124,6 +301,119 @@ mod tests {
         config.compile().unwrap()
     }
 
+    // ── Default policy ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_safe_subcommands_allowed() {
+        for cmd in [
+            "mise install",
+            "mise install node@20",
+            "mise i",
+            "mise use -g node@20",
+            "mise u node@20",
+            "mise ls",
+            "mise list",
+            "mise ls-remote node",
+            "mise which node",
+            "mise where node",
+            "mise latest node",
+            "mise outdated",
+            "mise upgrade",
+            "mise up",
+            "mise plugins ls",
+            "mise prune",
+            "mise reshim",
+            "mise trust",
+            "mise activate zsh",
+            "mise shell node@20",
+            "mise version",
+            "mise --version",
+            "mise help",
+            "mise --help",
+            "mise tool node",
+            "mise unuse node",
+            "mise lock",
+            "mise -C /x install",
+            "mise --cd=/x install",
+            "mise -q -y install",
+            r#"mise "install""#,
+            "/opt/homebrew/bin/mise install",
+        ] {
+            assert!(!raw(cmd, &cfg()).is_blocked(), "{cmd}");
+            assert!(!segment(cmd).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_secret_exposing_subcommands_blocked() {
+        for cmd in [
+            "mise env",
+            "mise e",
+            "mise env -s bash",
+            "mise hook-env",
+            "mise exec -- ls",
+            "mise x node@20 -- node app.js",
+            "mise en",
+            "mise run build",
+            "mise r build",
+            "mise watch build",
+            "mise tasks info build",
+            "mise t ls",
+            "mise set",
+            "mise set API_KEY",
+            "mise ev",
+            "mise config get env.API_KEY",
+            "mise cfg ls",
+            "mise token github",
+            "mise mcp",
+            "mise ssh host",
+            "mise bootstrap",
+            "mise deps",
+            "mise daemons start",
+            "mise oci run",
+            "mise tool-stub x",
+            "mise test-tool node",
+            "mise doctor",
+            "mise settings",
+            "mise generate task-docs",
+            "mise edit",
+            "mise dotfiles diff",
+            "mise build",
+            "mise",
+            "mise -C /x env",
+            "mise --unknown-flag install",
+        ] {
+            assert!(raw(cmd, &cfg()).is_blocked(), "{cmd}");
+            assert!(segment(cmd).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_unresolvable_invocations_blocked() {
+        for cmd in [
+            "mise $SUB",
+            "$(mise install)",
+            "mis? install",
+            r#"eval "$(mise activate bash)""#,
+            "unknown-wrapper mise env",
+        ] {
+            assert!(raw(cmd, &cfg()).is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_nested_and_wrapped() {
+        assert!(!raw("cd x && mise install", &cfg()).is_blocked());
+        assert!(!raw("echo $(mise which node)", &cfg()).is_blocked());
+        assert!(!raw(r#"bash -c "mise install""#, &cfg()).is_blocked());
+        assert!(!raw("sudo mise install", &cfg()).is_blocked());
+        assert!(!raw("unknown-wrapper mise install", &cfg()).is_blocked());
+        assert!(raw("mise install && mise env", &cfg()).is_blocked());
+        assert!(raw("echo $(mise env)", &cfg()).is_blocked());
+        assert!(raw(r#"bash -c "mise exec -- ls""#, &cfg()).is_blocked());
+        assert!(raw("sudo mise run deploy", &cfg()).is_blocked());
+    }
+
     // ── Config gating ───────────────────────────────────────────────────────
 
     #[test]
@@ -131,43 +421,24 @@ mod tests {
         let c = cfg_tool(false, &[]);
         assert!(!analyze_mise(&tokenize("mise exec -- ls"), &c).is_blocked());
         assert!(!raw("mise exec -- ls", &c).is_blocked());
-        assert!(!raw("cat .mise.toml", &c).is_blocked());
+        assert!(!raw("mise run build", &c).is_blocked());
     }
 
     #[test]
-    fn test_allowlist_allows_listed_only() {
-        let c = cfg_tool(true, &["install", "ls"]);
-        assert!(!analyze_mise(&tokenize("mise install node@20"), &c).is_blocked());
-        assert!(!raw("mise install node@20", &c).is_blocked());
-        assert!(!raw("mise ls", &c).is_blocked());
-        assert!(analyze_mise(&tokenize("mise exec -- ls"), &c).is_blocked());
+    fn test_allowlist_extends_safe_set() {
+        let c = cfg_tool(true, &["run"]);
+        assert!(!analyze_mise(&tokenize("mise run build"), &c).is_blocked());
+        assert!(!raw("mise run build", &c).is_blocked());
+        assert!(!raw("mise r build", &c).is_blocked());
+        assert!(!raw("mise install", &c).is_blocked());
         assert!(raw("mise exec -- ls", &c).is_blocked());
     }
 
     #[test]
     fn test_allowlist_checks_every_occurrence() {
-        let c = cfg_tool(true, &["install"]);
-        let d = raw("mise install && mise exec -- ls", &c);
-        assert_eq!(d.block_info().unwrap().rule, "mise.exec");
-    }
-
-    #[test]
-    fn test_allowlist_sees_through_quotes_and_nesting() {
-        let c = cfg_tool(true, &["install"]);
-        assert!(!raw(r#"mise "install""#, &c).is_blocked());
-        assert!(!raw("echo $(mise install)", &c).is_blocked());
-        assert!(!raw(r#"bash -c "mise install""#, &c).is_blocked());
-    }
-
-    #[test]
-    fn test_allowlist_blocks_unclean_subcommands() {
-        let c = cfg_tool(true, &["install", "env"]);
-        assert!(raw("mise --cd /x install", &c).is_blocked());
-        assert!(raw("mise $SUB", &c).is_blocked());
-        assert!(raw("$(mise install)", &c).is_blocked());
-        assert!(raw("mis? install", &c).is_blocked());
-        assert!(raw("unknown-wrapper mise install", &c).is_blocked());
-        assert!(analyze_mise(&tokenize("mise --cd /x install"), &c).is_blocked());
+        let c = cfg_tool(true, &["run"]);
+        let d = raw("mise run build && mise exec -- ls", &c);
+        assert_eq!(rule(d), "mise.exec");
     }
 
     #[test]
@@ -175,244 +446,68 @@ mod tests {
         let c = cfg_tool(false, &[]);
         assert!(!raw("mise env", &c).is_blocked());
         assert!(crate::rules::analyze_command("mise env", &c, None).is_blocked());
+        assert!(crate::rules::analyze_command("mise -C /x e", &c, None).is_blocked());
     }
 
-    // ── Per-segment dispatch ────────────────────────────────────────────────
+    // ── Reasons ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_bare_mise() {
-        assert!(analyze_mise(&tokenize("mise"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_env() {
-        assert!(analyze_mise(&tokenize("mise env"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_env_shell_bash() {
-        assert!(analyze_mise(&tokenize("mise env -s bash"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_hook_env() {
-        assert!(analyze_mise(&tokenize("mise hook-env"), &cfg()).is_blocked());
+    fn test_reasons() {
+        assert_eq!(rule(raw("mise env", &cfg())), "mise.env");
+        assert_eq!(rule(raw("mise e", &cfg())), "mise.env");
+        assert_eq!(rule(raw("mise hook-env", &cfg())), "mise.hook_env");
+        assert_eq!(rule(raw("mise x -- ls", &cfg())), "mise.exec");
+        assert_eq!(rule(raw("mise run build", &cfg())), "mise.run");
+        assert_eq!(rule(raw("mise set", &cfg())), "mise.set");
+        assert_eq!(rule(raw("mise token github", &cfg())), "mise.token");
+        assert_eq!(rule(raw("mise mcp", &cfg())), "mise.mcp");
+        assert_eq!(rule(raw("mise build", &cfg())), "mise.task");
+        assert_eq!(rule(raw("mise", &cfg())), "mise.blocked");
+        assert_eq!(rule(segment("mise exec -- cat .env")), "mise.exec");
+        assert_eq!(rule(raw("unknown-wrapper mise env", &cfg())), "mise.env");
     }
 
     #[test]
-    fn test_mise_exec() {
-        assert!(analyze_mise(&tokenize("mise exec -- printenv"), &cfg()).is_blocked());
+    fn test_task_reason_names_the_task() {
+        let d = raw("mise deploy", &cfg());
+        assert!(d.block_info().unwrap().reason.contains("mise deploy"));
+    }
+
+    // ── Data mentions and substrings ────────────────────────────────────────
+
+    #[test]
+    fn test_raw_data_mentions_allowed() {
+        for cmd in [
+            "rg mise",
+            "brew bundle add mise",
+            r#"git commit -m "drop mise env""#,
+            "ls # mise env",
+            "npm install promise",
+            "echo the demise of foo",
+            "grep misery file.txt",
+            "cat automise.log",
+            "ls -la",
+        ] {
+            assert!(!raw(cmd, &cfg()).is_blocked(), "{cmd}");
+        }
     }
 
     #[test]
-    fn test_mise_shell() {
-        assert!(analyze_mise(&tokenize("mise shell python@3.12"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_activate() {
-        assert!(analyze_mise(&tokenize("mise activate bash"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_settings() {
-        assert!(analyze_mise(&tokenize("mise settings ls"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_config() {
-        assert!(analyze_mise(&tokenize("mise config get"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_install_blocked_too() {
-        // Even "version manager" commands are blocked by policy.
-        assert!(analyze_mise(&tokenize("mise install"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_plugins_blocked_too() {
-        assert!(analyze_mise(&tokenize("mise plugins"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_current_blocked_too() {
-        assert!(analyze_mise(&tokenize("mise current"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_version_blocked_too() {
-        assert!(analyze_mise(&tokenize("mise version"), &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_mise_path_invocation() {
-        assert!(analyze_mise(&tokenize("/opt/homebrew/bin/mise env"), &cfg()).is_blocked());
+    fn test_substitution_forms_blocked() {
+        for cmd in [
+            "echo $(mise env -s bash)",
+            "BLOB=$(mise hook-env)",
+            "some-cmd --opt $(mise env)",
+            "echo `mise env`",
+            "echo $('mise env')",
+            "/opt/homebrew/bin/mise env",
+        ] {
+            assert!(raw(cmd, &cfg()).is_blocked(), "{cmd}");
+        }
     }
 
     #[test]
     fn test_not_mise() {
-        assert!(!analyze_mise(&tokenize("ls -la"), &cfg()).is_blocked());
-    }
-
-    // ── Subcommand-specific reasons ─────────────────────────────────────────
-
-    #[test]
-    fn test_env_reason() {
-        let d = analyze_mise(&tokenize("mise env"), &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.env");
-    }
-
-    #[test]
-    fn test_hook_env_reason() {
-        let d = analyze_mise(&tokenize("mise hook-env"), &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.hook_env");
-    }
-
-    #[test]
-    fn test_exec_reason() {
-        let d = analyze_mise(&tokenize("mise exec -- cat .env"), &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.exec");
-    }
-
-    #[test]
-    fn test_activate_reason() {
-        let d = analyze_mise(&tokenize("mise activate zsh"), &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.activate");
-    }
-
-    #[test]
-    fn test_default_reason() {
-        let d = analyze_mise(&tokenize("mise install"), &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.blocked");
-    }
-
-    // ── Raw / substitution-aware ────────────────────────────────────────────
-
-    #[test]
-    fn test_raw_standalone() {
-        assert!(raw("mise env", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_echo_substitution() {
-        assert!(raw("echo $(mise env -s bash)", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_variable_assignment() {
-        assert!(raw("BLOB=$(mise hook-env)", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_eval_substitution() {
-        assert!(raw(r#"eval "$(mise activate bash)""#, &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_after_and() {
-        assert!(raw("cd /tmp && mise env", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_bash_c_quoted() {
-        assert!(raw(r#"bash -c "mise env""#, &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_substitution_in_argument_blocked() {
-        assert!(raw("some-cmd --opt $(mise env)", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_data_mentions_allowed() {
-        assert!(!raw("rg mise", &cfg()).is_blocked());
-        assert!(!raw("brew bundle add mise", &cfg()).is_blocked());
-        assert!(!raw(r#"git commit -m "drop mise env""#, &cfg()).is_blocked());
-        assert!(!raw("ls # mise env", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_path_invocation() {
-        assert!(raw("/opt/homebrew/bin/mise env", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_unrelated() {
-        assert!(!raw("ls -la", &cfg()).is_blocked());
-    }
-
-    // ── False-positive guards (word boundary) ───────────────────────────────
-
-    #[test]
-    fn test_raw_promise_not_blocked() {
-        assert!(!raw("npm install promise", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_demise_not_blocked() {
-        assert!(!raw("echo the demise of foo", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_misery_not_blocked() {
-        assert!(!raw("grep misery file.txt", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_automise_not_blocked() {
-        assert!(!raw("cat automise.log", &cfg()).is_blocked());
-    }
-
-    // ── Quoting / substitution edge cases ───────────────────────────────────
-
-    #[test]
-    fn test_raw_backtick_substitution() {
-        assert!(raw("echo `mise env`", &cfg()).is_blocked());
-    }
-
-    #[test]
-    fn test_raw_single_quoted_in_substitution() {
-        // Single-quoted form inside $() — word boundary still matches
-        // because `'` is a non-word char.
-        assert!(raw("echo $('mise env')", &cfg()).is_blocked());
-    }
-
-    // ── Subcommand reason surfaces from raw layer ───────────────────────────
-
-    #[test]
-    fn test_raw_env_returns_specific_reason() {
-        let d = raw("mise env", &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.env");
-    }
-
-    #[test]
-    fn test_raw_hook_env_returns_specific_reason() {
-        let d = raw("mise hook-env", &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.hook_env");
-    }
-
-    #[test]
-    fn test_raw_exec_returns_specific_reason() {
-        let d = raw("mise exec -- printenv", &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.exec");
-    }
-
-    #[test]
-    fn test_raw_activate_returns_specific_reason() {
-        let d = raw("mise activate bash", &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.activate");
-    }
-
-    #[test]
-    fn test_raw_bare_returns_generic_reason() {
-        let d = raw("mise", &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.blocked");
-    }
-
-    #[test]
-    fn test_raw_unknown_subcommand_returns_generic() {
-        let d = raw("mise install", &cfg());
-        assert_eq!(d.block_info().unwrap().rule, "mise.blocked");
+        assert!(!segment("ls -la").is_blocked());
     }
 }
