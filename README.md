@@ -216,7 +216,7 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `git checkout --` (discards changes)
 - `git reset --hard` (discards all uncommitted changes)
 - `git push -f` to main/master/develop/release
-- `git branch -D` (force delete)
+- `git branch -D` (force delete; off alone with `[git] allow_branch_force_delete = true`)
 - `git stash drop`, `git stash clear`
 - `git clean -f`
 

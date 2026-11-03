@@ -335,6 +335,8 @@ pub struct GitConfig {
     pub block_add_sensitive: bool,
     /// Allowed branches for force push (empty = block all).
     pub force_push_allowed_branches: Vec<String>,
+    /// Allow `git branch -D` (and `-d -f`).
+    pub allow_branch_force_delete: bool,
 }
 
 impl Default for GitConfig {
@@ -343,6 +345,7 @@ impl Default for GitConfig {
             block_destructive: true,
             block_add_sensitive: true,
             force_push_allowed_branches: vec![],
+            allow_branch_force_delete: false,
         }
     }
 }
@@ -1125,6 +1128,8 @@ enabled = false
 allowed_paths = ['/']
 [git]
 force_push_allowed_branches = ['main']
+block_destructive = false
+allow_branch_force_delete = true
 "#,
         );
         assert!(merged.sensitive_group_enabled("env_files"));
@@ -1132,6 +1137,8 @@ force_push_allowed_branches = ['main']
         assert!(merged.dependencies.enabled);
         assert!(!merged.rm.allowed_paths.contains(&"/".to_string()));
         assert!(merged.git.force_push_allowed_branches.is_empty());
+        assert!(merged.git.block_destructive);
+        assert!(!merged.git.allow_branch_force_delete);
         assert_eq!(merged.read_commands, Config::default().read_commands);
         let compiled = merged.compile().unwrap();
         assert!(compiled.is_sensitive_path(".env").is_some());

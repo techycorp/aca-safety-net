@@ -162,7 +162,10 @@ fn analyze_git_push(args: &[&str], config: &CompiledConfig) -> Decision {
     Decision::allow()
 }
 
-fn analyze_git_branch(args: &[&str], _config: &CompiledConfig) -> Decision {
+fn analyze_git_branch(args: &[&str], config: &CompiledConfig) -> Decision {
+    if config.raw.git.allow_branch_force_delete {
+        return Decision::allow();
+    }
     // Block: git branch -D (force delete)
     let delete = has_short(args, 'd') || args.contains(&"--delete");
     let force = has_short(args, 'f') || args.contains(&"--force");
@@ -253,6 +256,7 @@ mod tests {
                 block_destructive: true,
                 block_add_sensitive: true,
                 force_push_allowed_branches: vec!["feature-test".to_string()],
+                allow_branch_force_delete: false,
             },
             ..Default::default()
         }
@@ -313,6 +317,18 @@ mod tests {
             let decision = analyze_git(&ExecSites::parse(cmd), &config);
             assert!(!decision.is_blocked(), "{cmd}");
         }
+    }
+
+    #[test]
+    fn test_allow_branch_force_delete() {
+        let mut config = test_config();
+        config.raw.git.allow_branch_force_delete = true;
+        for cmd in ["git branch -D feature", "git branch -d -f feature"] {
+            let decision = analyze_git(&ExecSites::parse(cmd), &config);
+            assert!(!decision.is_blocked(), "{cmd}");
+        }
+        let decision = analyze_git(&ExecSites::parse("git reset --hard HEAD~1"), &config);
+        assert!(decision.is_blocked());
     }
 
     #[test]
