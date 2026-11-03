@@ -43,6 +43,10 @@ fn analyze_git_words(words: &[&str], config: &CompiledConfig) -> Decision {
     };
     let args = &words[i + 1..];
 
+    if subcommand != "add" && !config.raw.git.block_destructive {
+        return Decision::allow();
+    }
+
     match subcommand {
         "checkout" => analyze_git_checkout(args, config),
         "reset" => analyze_git_reset(args, config),
@@ -291,6 +295,31 @@ mod tests {
     fn test_git_branch_delete() {
         let config = test_config();
         let decision = analyze_git(&ExecSites::parse("git branch -D feature"), &config);
+        assert!(decision.is_blocked());
+    }
+
+    #[test]
+    fn test_block_destructive_off_allows_destructive() {
+        let mut config = test_config();
+        config.raw.git.block_destructive = false;
+        for cmd in [
+            "git branch -D feature",
+            "git reset --hard HEAD~1",
+            "git push -f origin main",
+            "git clean -fd",
+            "git stash drop",
+            "git checkout -- file.txt",
+        ] {
+            let decision = analyze_git(&ExecSites::parse(cmd), &config);
+            assert!(!decision.is_blocked(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn test_block_destructive_off_still_blocks_add_sensitive() {
+        let mut config = test_config();
+        config.raw.git.block_destructive = false;
+        let decision = analyze_git(&ExecSites::parse("git add .env"), &config);
         assert!(decision.is_blocked());
     }
 

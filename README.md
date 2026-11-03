@@ -219,6 +219,9 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `git branch -D` (force delete)
 - `git stash drop`, `git stash clear`
 - `git clean -f`
+
+The above are off with `[git] block_destructive = false` (user config only; ignored in `.security-hook.toml`).
+
 - `git add .env` (blocks staging sensitive files; off with `[git] block_add_sensitive = false`)
 
 Combined short flags count (`git clean -fd`, `git push -fu origin main`, `git branch -d -f`).
