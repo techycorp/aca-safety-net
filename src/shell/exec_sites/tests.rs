@@ -180,6 +180,25 @@ fn test_comments_parsed_both_ways() {
     assert_no_hits("infisical", &["ls # infisical run", "echo hi # infisical"]);
 }
 
+#[test]
+fn test_globs_without_literals_name_nothing() {
+    for name in ["infisical", "mise", "direnv"] {
+        assert_no_hits(
+            name,
+            &[
+                "A='*' ls",
+                "export ALLOWED_ORIGINS='*'",
+                "export A=*; ls",
+                "X='?*' ls",
+                "X='[a-z]*' ls",
+                "* run",
+                "/usr/bin/* run",
+            ],
+        );
+    }
+    assert_hits("infisical", &["X='infi*' ls", "/opt/*/infisical run"]);
+}
+
 // ── Wrappers ────────────────────────────────────────────────────────────────
 
 #[test]

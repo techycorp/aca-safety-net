@@ -94,3 +94,31 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
 
     Decision::Allow
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn test_quoted_star_assignment_not_blocked() {
+        let secretless = Config {
+            profile: Some("secretless".to_string()),
+            ..Default::default()
+        }
+        .compile()
+        .unwrap();
+        let cmd = "cd /x/mordor && export CI=true RAILS_ENV=test \
+            DATABASE_URL=postgres://mordor:mordor@localhost/mordor_ci_test \
+            ALLOWED_ORIGINS='*' DEVISE_SECRET_KEY=test_secret_key_for_ci_only \
+            MORDOR_TUNNEL_SECRET=test_tunnel_secret_for_ci_only; \
+            mise exec -- bundle exec rails db:create db:schema:load 2>&1 | grep -E \"Created|rror\"; \
+            mise exec -- bundle exec rspec 2>&1 | grep -E \"examples,|^rspec \"; \
+            PGPASSWORD=mordor dropdb -h localhost -U mordor mordor_ci_test && echo \"dropped mordor_ci_test\"";
+        let d = analyze_command(cmd, &secretless, None);
+        assert!(!d.is_blocked(), "{:?}", d.block_info());
+
+        let default = Config::default().compile().unwrap();
+        assert!(!analyze_command("A='*' ls", &default, None).is_blocked());
+    }
+}

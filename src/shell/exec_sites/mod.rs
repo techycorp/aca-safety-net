@@ -13,7 +13,9 @@ mod commands;
 mod parser;
 mod pattern;
 
-use pattern::{InterpKind, contains_name, expand_braces, glob_match, has_exec_primitive};
+use pattern::{
+    InterpKind, contains_name, expand_braces, glob_match, has_exec_primitive, has_literal,
+};
 
 /// Commands whose arguments are data. The adjacency heuristic skips them.
 const DATA_COMMANDS: &[&str] = &[
@@ -262,7 +264,7 @@ fn word_matches(word: &Word, name: &str) -> bool {
     candidates.iter().any(|c| {
         let n = normalize_command_name(c);
         if word.glob {
-            glob_match(&n, name)
+            has_literal(&n) && glob_match(&n, name)
         } else {
             n == name
         }

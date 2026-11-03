@@ -137,6 +137,24 @@ fn sequence(body: &str) -> Option<Vec<String>> {
 }
 
 /// Whether the shell glob `pattern` could match `name`. Supports `*`, `?`, `[...]`.
+/// Whether a glob has a character outside `*`, `?` and `[...]` classes.
+/// A glob without one (`*`, `?*`, `[a-z]*`) names no program in particular.
+pub fn has_literal(pattern: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < p.len() {
+        match p[i] {
+            '*' | '?' => i += 1,
+            '[' => match class_end(&p[i..]) {
+                Some(end) => i += end + 1,
+                None => return true,
+            },
+            _ => return true,
+        }
+    }
+    false
+}
+
 pub fn glob_match(pattern: &str, name: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();
@@ -273,6 +291,16 @@ mod tests {
         assert!(glob_match("m[!x]se", "mise"));
         assert!(!glob_match("m[!i]se", "mise"));
         assert!(!glob_match("mis", "mise"));
+    }
+
+    #[test]
+    fn test_has_literal() {
+        for p in ["*", "**", "?*", "????", "[a-z]*", "[!x]?"] {
+            assert!(!has_literal(p), "{p}");
+        }
+        for p in ["mis?", "inf*", "*e", "[m]ise", "[a-z", "m[a-z]se"] {
+            assert!(has_literal(p), "{p}");
+        }
     }
 
     #[test]
