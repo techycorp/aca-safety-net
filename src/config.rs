@@ -512,6 +512,10 @@ impl Config {
         if other.profile.is_some() {
             self.profile = other.profile.clone();
         }
+        self.git.block_destructive = other.git.block_destructive;
+        self.git.block_add_sensitive = other.git.block_add_sensitive;
+        self.git.allow_branch_force_delete = other.git.allow_branch_force_delete;
+        self.rm.block_outside_cwd = other.rm.block_outside_cwd;
         self.merge(other);
     }
 
@@ -550,6 +554,18 @@ impl Config {
         if !other.git.force_push_allowed_branches.is_empty() {
             ignored.push("git.force_push_allowed_branches");
             other.git.force_push_allowed_branches = vec![];
+        }
+        if !other.git.block_destructive {
+            ignored.push("git.block_destructive");
+        }
+        if !other.git.block_add_sensitive {
+            ignored.push("git.block_add_sensitive");
+        }
+        if other.git.allow_branch_force_delete {
+            ignored.push("git.allow_branch_force_delete");
+        }
+        if !other.rm.block_outside_cwd {
+            ignored.push("rm.block_outside_cwd");
         }
 
         if !ignored.is_empty() {
@@ -1109,6 +1125,28 @@ allow_subcommands = ["install"]
         let mut base = Config::default();
         base.merge_project(toml::from_str(toml_src).unwrap());
         base
+    }
+
+    #[test]
+    fn test_user_scalars_apply() {
+        let mut merged = Config::default();
+        merged.merge_user(
+            toml::from_str(
+                r#"
+[git]
+block_destructive = false
+block_add_sensitive = false
+allow_branch_force_delete = true
+[rm]
+block_outside_cwd = false
+"#,
+            )
+            .unwrap(),
+        );
+        assert!(!merged.git.block_destructive);
+        assert!(!merged.git.block_add_sensitive);
+        assert!(merged.git.allow_branch_force_delete);
+        assert!(!merged.rm.block_outside_cwd);
     }
 
     #[test]
