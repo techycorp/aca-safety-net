@@ -88,8 +88,9 @@ To add custom rules or override settings, create config files that are loaded an
 
 **Merge behavior:**
 - Arrays (`sensitive_files`, `deny`, `patterns`) are **extended** (your patterns added to defaults)
-- Scalars (`enabled` flags) can be **overridden**
-- **Project config can only tighten.** Relaxing keys in `.security-hook.toml` (`sensitive_groups`, `tools`, `profile`, `allowed_files`, `read_commands`, `dependencies.enabled = false`, `rm.allowed_paths`, `git.force_push_allowed_branches`) are ignored with a warning, since the agent works inside the project. Put them in the user config.
+- Maps (`sensitive_groups`, `tools`) are **merged** per key
+- Scalars override only when set to a non-default value, so a project file that omits a setting keeps the user value
+- Both files apply every setting; project config can relax protections as well as tighten them. The agent cannot edit either file.
 
 `just install` only writes the user config if it doesn't exist yet.
 
@@ -220,7 +221,7 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `git stash drop`, `git stash clear`
 - `git clean -f`
 
-The above are off with `[git] block_destructive = false` (user config only; ignored in `.security-hook.toml`).
+The above are off with `[git] block_destructive = false`.
 
 - `git add .env` (blocks staging sensitive files; off with `[git] block_add_sensitive = false`)
 
@@ -412,7 +413,7 @@ action = "allow"
 ## How It Works
 
 1. Claude Code invokes the hook via stdin (JSON with `tool_name`, `tool_input`)
-2. Hook loads hardcoded defaults, then merges optional config from `~/.config/aca-safety-net/config.toml` (may relax) + `.security-hook.toml` (may only tighten). Config warnings are printed to stderr.
+2. Hook loads hardcoded defaults, then merges optional config from `~/.config/aca-safety-net/config.toml`, then `.security-hook.toml`. Config warnings are printed to stderr.
 3. For Bash: checks deny rules and sensitive patterns, then parses the command into every place it runs a program and checks each tool rule there
 4. For Read: checks file path against sensitive patterns
 5. For Edit/Write: checks if file matches dependency patterns (returns "ask" for approval)

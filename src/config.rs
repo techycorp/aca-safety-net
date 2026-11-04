@@ -460,14 +460,14 @@ impl Config {
 
         // Load user config (~/.config/aca-safety-net/config.toml)
         if let Some(user_config) = Self::load_user_config()? {
-            config.merge_user(user_config);
+            config.merge(user_config);
         }
 
         // Load and merge project config (.security-hook.toml in cwd)
         if let Some(cwd) = cwd
             && let Some(project_config) = Self::load_project_config(cwd)?
         {
-            config.merge_project(project_config);
+            config.merge(project_config);
         }
 
         Ok(config)
@@ -505,81 +505,18 @@ impl Config {
         dirs::home_dir().map(|h| h.join(".config/aca-safety-net/config.toml"))
     }
 
-    /// Merge the user config. The user config may relax protections.
-    fn merge_user(&mut self, other: Config) {
-        self.sensitive_groups.extend(other.sensitive_groups.clone());
-        self.tools.extend(other.tools.clone());
-        if other.profile.is_some() {
-            self.profile = other.profile.clone();
-        }
-        self.git.block_destructive = other.git.block_destructive;
-        self.git.block_add_sensitive = other.git.block_add_sensitive;
-        self.git.allow_branch_force_delete = other.git.allow_branch_force_delete;
-        self.rm.block_outside_cwd = other.rm.block_outside_cwd;
-        self.merge(other);
-    }
-
-    /// Merge a project config (`.security-hook.toml`). Project config lives in
-    /// the repo the agent is working in, so it may only tighten: relaxing
-    /// settings are dropped with a warning.
-    fn merge_project(&mut self, mut other: Config) {
-        let defaults = Config::default();
-        let mut ignored = vec![];
-
-        if !other.sensitive_groups.is_empty() {
-            ignored.push("sensitive_groups");
-        }
-        if !other.tools.is_empty() {
-            ignored.push("tools");
-        }
-        if other.profile.is_some() {
-            ignored.push("profile");
-        }
-        if other.allowed_files != defaults.allowed_files {
-            ignored.push("allowed_files");
-        }
-        other.allowed_files = vec![];
-        if other.read_commands != defaults.read_commands {
-            ignored.push("read_commands");
-        }
-        other.read_commands = None;
-        if !other.dependencies.enabled {
-            ignored.push("dependencies.enabled");
-            other.dependencies.enabled = true;
-        }
-        if other.rm.allowed_paths != defaults.rm.allowed_paths {
-            ignored.push("rm.allowed_paths");
-        }
-        other.rm.allowed_paths = vec![];
-        if !other.git.force_push_allowed_branches.is_empty() {
-            ignored.push("git.force_push_allowed_branches");
-            other.git.force_push_allowed_branches = vec![];
-        }
-        if !other.git.block_destructive {
-            ignored.push("git.block_destructive");
-        }
-        if !other.git.block_add_sensitive {
-            ignored.push("git.block_add_sensitive");
-        }
-        if other.git.allow_branch_force_delete {
-            ignored.push("git.allow_branch_force_delete");
-        }
-        if !other.rm.block_outside_cwd {
-            ignored.push("rm.block_outside_cwd");
-        }
-
-        if !ignored.is_empty() {
-            self.warnings.push(format!(
-                ".security-hook.toml can only tighten protections; ignored: {}",
-                ignored.join(", ")
-            ));
-        }
-        self.merge(other);
-    }
-
-    /// Merge another config into this one (other takes precedence for scalars).
+    /// Merge one config layer (user, then project) into this one. Lists and
+    /// maps extend; a scalar overrides only when the layer sets it to a
+    /// non-default value, so a layer that omits it keeps the earlier value.
     fn merge(&mut self, other: Config) {
-        // Extend arrays
+        let d = Config::default();
+
+        self.sensitive_groups.extend(other.sensitive_groups);
+        self.tools.extend(other.tools);
+        if other.profile.is_some() {
+            self.profile = other.profile;
+        }
+
         self.sensitive_files.extend(other.sensitive_files);
         self.allowed_files.extend(other.allowed_files);
         self.deny.extend(other.deny);
@@ -591,31 +528,39 @@ impl Config {
         self.git
             .force_push_allowed_branches
             .extend(other.git.force_push_allowed_branches);
-
-        // Override scalars if set in project config
-        if other.read_commands.is_some() {
-            self.read_commands = other.read_commands;
-        }
-        if other.paranoid.enabled {
-            self.paranoid.enabled = true;
-        }
-        if other.audit.enabled {
-            self.audit.enabled = true;
-            if other.audit.path.is_some() {
-                self.audit.path = other.audit.path;
-            }
-        }
-
-        // Dependencies: if other config explicitly disables, respect that
-        // This allows users to opt-out of dependency protection
-        if !other.dependencies.enabled {
-            self.dependencies.enabled = false;
-        }
         self.dependencies
             .patterns
             .extend(other.dependencies.patterns);
-        if other.dependencies.suggestion.is_some() {
+
+        if other.read_commands != d.read_commands {
+            self.read_commands = other.read_commands;
+        }
+        if other.paranoid.enabled != d.paranoid.enabled {
+            self.paranoid.enabled = other.paranoid.enabled;
+        }
+        if other.audit.enabled != d.audit.enabled {
+            self.audit.enabled = other.audit.enabled;
+        }
+        if other.audit.path != d.audit.path {
+            self.audit.path = other.audit.path;
+        }
+        if other.dependencies.enabled != d.dependencies.enabled {
+            self.dependencies.enabled = other.dependencies.enabled;
+        }
+        if other.dependencies.suggestion != d.dependencies.suggestion {
             self.dependencies.suggestion = other.dependencies.suggestion;
+        }
+        if other.git.block_destructive != d.git.block_destructive {
+            self.git.block_destructive = other.git.block_destructive;
+        }
+        if other.git.block_add_sensitive != d.git.block_add_sensitive {
+            self.git.block_add_sensitive = other.git.block_add_sensitive;
+        }
+        if other.git.allow_branch_force_delete != d.git.allow_branch_force_delete {
+            self.git.allow_branch_force_delete = other.git.allow_branch_force_delete;
+        }
+        if other.rm.block_outside_cwd != d.rm.block_outside_cwd {
+            self.rm.block_outside_cwd = other.rm.block_outside_cwd;
         }
     }
 
@@ -1123,14 +1068,14 @@ allow_subcommands = ["install"]
 
     fn project(toml_src: &str) -> Config {
         let mut base = Config::default();
-        base.merge_project(toml::from_str(toml_src).unwrap());
+        base.merge(toml::from_str(toml_src).unwrap());
         base
     }
 
     #[test]
     fn test_user_scalars_apply() {
         let mut merged = Config::default();
-        merged.merge_user(
+        merged.merge(
             toml::from_str(
                 r#"
 [git]
@@ -1150,7 +1095,7 @@ block_outside_cwd = false
     }
 
     #[test]
-    fn test_project_cannot_relax() {
+    fn test_project_can_relax() {
         let merged = project(
             r#"
 profile = "secretless"
@@ -1164,33 +1109,66 @@ enabled = false
 enabled = false
 [rm]
 allowed_paths = ['/']
+block_outside_cwd = false
 [git]
 force_push_allowed_branches = ['main']
 block_destructive = false
+block_add_sensitive = false
 allow_branch_force_delete = true
 "#,
         );
-        assert!(merged.sensitive_group_enabled("env_files"));
-        assert!(merged.tool_config("mise").enabled);
-        assert!(merged.dependencies.enabled);
-        assert!(!merged.rm.allowed_paths.contains(&"/".to_string()));
-        assert!(merged.git.force_push_allowed_branches.is_empty());
-        assert!(merged.git.block_destructive);
-        assert!(!merged.git.allow_branch_force_delete);
-        assert_eq!(merged.read_commands, Config::default().read_commands);
-        let compiled = merged.compile().unwrap();
-        assert!(compiled.is_sensitive_path(".env").is_some());
-        assert!(compiled.is_read_command("cat"));
-        let warning = &compiled.warnings[0];
-        for key in [
-            "sensitive_groups",
-            "tools",
-            "profile",
-            "allowed_files",
-            "read_commands",
-        ] {
-            assert!(warning.contains(key), "{}", key);
-        }
+        assert_eq!(merged.profile.as_deref(), Some("secretless"));
+        assert!(!merged.sensitive_group_enabled("env_files"));
+        assert!(!merged.tool_config("mise").enabled);
+        assert!(!merged.dependencies.enabled);
+        assert!(merged.rm.allowed_paths.contains(&"/".to_string()));
+        assert!(!merged.rm.block_outside_cwd);
+        assert_eq!(merged.git.force_push_allowed_branches, vec!["main"]);
+        assert!(!merged.git.block_destructive);
+        assert!(!merged.git.block_add_sensitive);
+        assert!(merged.git.allow_branch_force_delete);
+        assert_eq!(merged.read_commands.as_deref(), Some("nothing"));
+        assert!(merged.allowed_files.contains(&".*".to_string()));
+        assert!(merged.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_project_omitted_keys_keep_user_values() {
+        let mut merged = Config::default();
+        merged.merge(
+            toml::from_str(
+                r#"
+read_commands = 'mycat'
+[dependencies]
+enabled = false
+suggestion = "use the deps tool"
+[git]
+block_destructive = false
+allow_branch_force_delete = true
+[rm]
+block_outside_cwd = false
+[audit]
+enabled = true
+path = '/tmp/audit.jsonl'
+[paranoid]
+enabled = true
+"#,
+            )
+            .unwrap(),
+        );
+        merged.merge(toml::from_str(r#"sensitive_files = ['internal-token']"#).unwrap());
+        assert_eq!(merged.read_commands.as_deref(), Some("mycat"));
+        assert!(!merged.dependencies.enabled);
+        assert_eq!(
+            merged.dependencies.suggestion.as_deref(),
+            Some("use the deps tool")
+        );
+        assert!(!merged.git.block_destructive);
+        assert!(merged.git.allow_branch_force_delete);
+        assert!(!merged.rm.block_outside_cwd);
+        assert!(merged.audit.enabled);
+        assert_eq!(merged.audit.path.as_deref(), Some("/tmp/audit.jsonl"));
+        assert!(merged.paranoid.enabled);
     }
 
     #[test]
@@ -1211,7 +1189,7 @@ enabled = true
     #[test]
     fn test_user_can_relax() {
         let mut base = Config::default();
-        base.merge_user(
+        base.merge(
             toml::from_str(
                 r#"
 [sensitive_groups]

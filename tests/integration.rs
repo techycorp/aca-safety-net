@@ -1227,30 +1227,26 @@ fn test_env_block_reports_group() {
 }
 
 #[test]
-fn test_project_config_cannot_relax() {
-    let home = TempDir::new().unwrap();
-    let config = create_config(&home, r#"sensitive_files = []"#);
-    let project = TempDir::new().unwrap();
-    fs::write(
-        project.path().join(".security-hook.toml"),
-        r#"
-profile = "secretless"
-allowed_files = ['.*']
-[sensitive_groups]
-env_files = false
-"#,
-    )
-    .unwrap();
+fn test_project_config_can_relax_sensitive_files() {
+    for toml_src in [
+        "profile = \"secretless\"",
+        "allowed_files = ['test_input/\\.env$']",
+        "[sensitive_groups]\nenv_files = false",
+    ] {
+        let home = TempDir::new().unwrap();
+        let config = create_config(&home, r#"sensitive_files = []"#);
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join(".security-hook.toml"), toml_src).unwrap();
 
-    cmd_with_config(&config)
-        .write_stdin(hook_json(
-            "Read",
-            serde_json::json!({"file_path": "test_input/.env"}),
-            Some(project.path()),
-        ))
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("can only tighten"));
+        cmd_with_config(&config)
+            .write_stdin(hook_json(
+                "Read",
+                serde_json::json!({"file_path": "test_input/.env"}),
+                Some(project.path()),
+            ))
+            .assert()
+            .success();
+    }
 }
 
 #[test]
@@ -1670,4 +1666,306 @@ block_outside_cwd = false
         .code(2)
         .stderr(predicate::str::contains("BLOCKED"));
     cmd_with_config(&off).write_stdin(input).assert().success();
+}
+
+fn bash_in(cmd: &str, cwd: &std::path::Path) -> String {
+    hook_json("Bash", serde_json::json!({"command": cmd}), Some(cwd))
+}
+
+#[test]
+fn test_config_file_tools() {
+    let dir = TempDir::new().unwrap();
+    let disabled = create_config(
+        &dir,
+        r#"
+[tools.direnv]
+enabled = false
+"#,
+    );
+    assert_bash_allowed(&disabled, "direnv exec . ls");
+
+    let sub_dir = TempDir::new().unwrap();
+    let allow_sub = create_config(
+        &sub_dir,
+        r#"
+[tools.direnv]
+allow_subcommands = ["status"]
+"#,
+    );
+    assert_bash_allowed(&allow_sub, "direnv status");
+    assert_bash_blocked(&allow_sub, "direnv exec . ls", "BLOCKED");
+}
+
+#[test]
+fn test_config_file_custom_rule() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+[[rules]]
+name = "no-curl"
+tool = "Bash"
+pattern = '^curl\b'
+reason = "curl is not allowed here"
+"#,
+    );
+    assert_bash_blocked(
+        &config,
+        "curl https://example.com",
+        "curl is not allowed here",
+    );
+}
+
+#[test]
+fn test_config_file_paranoid_extra_patterns() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+[paranoid]
+enabled = true
+extra_patterns = ['internal-widget']
+"#,
+    );
+    assert_bash_blocked(&config, "echo internal-widget", "internal-widget");
+}
+
+#[test]
+fn test_config_file_rm_allowed_paths() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+[rm]
+allowed_paths = ['/opt/scratch']
+"#,
+    );
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf /opt/scratch/build"},"cwd":"/home/user/project"}"#;
+    cmd_with_config(&config)
+        .write_stdin(input)
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_config_file_force_push_allowed_branches() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+[git]
+force_push_allowed_branches = ['main']
+"#,
+    );
+    assert_bash_allowed(&config, "git push -f origin main");
+    assert_bash_blocked(&config, "git push -f origin master", "BLOCKED");
+}
+
+#[test]
+fn test_config_file_audit() {
+    let dir = TempDir::new().unwrap();
+    let log = dir.path().join("audit.jsonl");
+    let config = create_config(
+        &dir,
+        &format!(
+            "[audit]\nenabled = true\npath = '{}'\n",
+            log.to_str().unwrap()
+        ),
+    );
+    assert_bash_blocked(&config, "git reset --hard", "BLOCKED");
+    let content = fs::read_to_string(&log).unwrap();
+    assert!(content.contains("git reset --hard"), "{content}");
+}
+
+#[test]
+fn test_config_file_dependency_patterns() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+[dependencies]
+patterns = ['deps\.lst$']
+suggestion = "use the deps tool"
+"#,
+    );
+    let input = r#"{"tool_name":"Edit","tool_input":{"file_path":"deps.lst","old_string":"a","new_string":"b"}}"#;
+    cmd_with_config(&config)
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"permissionDecision\":\"ask\""))
+        .stdout(predicate::str::contains("use the deps tool"));
+}
+
+/// Each project setting relaxes its protection; the same command is blocked
+/// when the project file leaves it out.
+#[test]
+fn test_project_config_file_can_relax() {
+    let cases: &[(&str, &str)] = &[
+        ("[git]\nblock_destructive = false", "git reset --hard"),
+        ("[git]\nblock_add_sensitive = false", "git add .env"),
+        (
+            "[git]\nallow_branch_force_delete = true",
+            "git branch -D feature",
+        ),
+        (
+            "[git]\nforce_push_allowed_branches = ['main']",
+            "git push -f origin main",
+        ),
+        (
+            "[rm]\nblock_outside_cwd = false",
+            "rm -rf /home/user/other/build",
+        ),
+        (
+            "[rm]\nallowed_paths = ['/home/user/other']",
+            "rm -rf /home/user/other/build",
+        ),
+        ("[tools.direnv]\nenabled = false", "direnv exec . ls"),
+    ];
+    for (toml_src, cmd) in cases {
+        let home = TempDir::new().unwrap();
+        let config = create_config(&home, r#"sensitive_files = []"#);
+        let project = TempDir::new().unwrap();
+        let project_file = project.path().join(".security-hook.toml");
+
+        fs::write(&project_file, "").unwrap();
+        cmd_with_config(&config)
+            .write_stdin(bash_in(cmd, project.path()))
+            .assert()
+            .code(2);
+
+        fs::write(&project_file, toml_src).unwrap();
+        cmd_with_config(&config)
+            .write_stdin(bash_in(cmd, project.path()))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_project_config_file_can_disable_dependencies() {
+    let home = TempDir::new().unwrap();
+    let config = create_config(&home, r#"sensitive_files = []"#);
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join(".security-hook.toml"),
+        "[dependencies]\nenabled = false\n",
+    )
+    .unwrap();
+
+    cmd_with_config(&config)
+        .write_stdin(hook_json(
+            "Edit",
+            serde_json::json!({"file_path": "Cargo.toml", "old_string": "a", "new_string": "b"}),
+            Some(project.path()),
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+/// A project file must not undo relaxations from the user config.
+#[test]
+fn test_project_config_file_keeps_user_relaxations() {
+    let home = TempDir::new().unwrap();
+    let config = create_config(
+        &home,
+        r#"
+[git]
+allow_branch_force_delete = true
+[rm]
+block_outside_cwd = false
+"#,
+    );
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join(".security-hook.toml"),
+        r#"sensitive_files = ['internal-token']"#,
+    )
+    .unwrap();
+
+    for cmd in ["git branch -D feature", "rm -rf /home/user/other/build"] {
+        cmd_with_config(&config)
+            .write_stdin(bash_in(cmd, project.path()))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_project_config_file_can_tighten() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "[[deny]]\ntool = 'Bash'\npattern = '^make deploy'\nreason = 'no deploys'",
+            "make deploy",
+            "no deploys",
+        ),
+        (
+            "[[rules]]\nname = 'no-curl'\ntool = 'Bash'\npattern = '^curl'\nreason = 'no curl'",
+            "curl https://example.com",
+            "no curl",
+        ),
+        (
+            "[paranoid]\nenabled = true\nextra_patterns = ['internal-widget']",
+            "echo internal-widget",
+            "internal-widget",
+        ),
+    ];
+    for (toml_src, cmd, expect) in cases {
+        let home = TempDir::new().unwrap();
+        let config = create_config(&home, r#"sensitive_files = []"#);
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join(".security-hook.toml"), toml_src).unwrap();
+
+        cmd_with_config(&config)
+            .write_stdin(bash_in(cmd, project.path()))
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(*expect));
+    }
+}
+
+#[test]
+fn test_project_config_file_dependency_patterns() {
+    let home = TempDir::new().unwrap();
+    let config = create_config(&home, r#"sensitive_files = []"#);
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join(".security-hook.toml"),
+        "[dependencies]\npatterns = ['deps\\.lst$']\n",
+    )
+    .unwrap();
+
+    cmd_with_config(&config)
+        .write_stdin(hook_json(
+            "Edit",
+            serde_json::json!({"file_path": "deps.lst", "old_string": "a", "new_string": "b"}),
+            Some(project.path()),
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"permissionDecision\":\"ask\""));
+}
+
+#[test]
+fn test_project_config_file_audit() {
+    let home = TempDir::new().unwrap();
+    let config = create_config(&home, r#"sensitive_files = []"#);
+    let project = TempDir::new().unwrap();
+    let log = project.path().join("audit.jsonl");
+    fs::write(
+        project.path().join(".security-hook.toml"),
+        format!(
+            "[audit]\nenabled = true\npath = '{}'\n",
+            log.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    cmd_with_config(&config)
+        .write_stdin(bash_in("git reset --hard", project.path()))
+        .assert()
+        .code(2);
+    let content = fs::read_to_string(&log).unwrap();
+    assert!(content.contains("git reset --hard"), "{content}");
 }
