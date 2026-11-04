@@ -1592,3 +1592,82 @@ fn test_git_global_flags_and_nesting_blocked() {
         assert_bash_blocked(&config, cmd, "BLOCKED");
     }
 }
+
+#[test]
+fn test_config_file_allow_branch_force_delete() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+[git]
+allow_branch_force_delete = true
+"#,
+    );
+
+    assert_bash_allowed(&config, "git branch -D feature");
+    assert_bash_allowed(&config, "git branch -d -f feature");
+    assert_bash_blocked(&config, "git reset --hard", "BLOCKED");
+}
+
+#[test]
+fn test_config_file_block_destructive_off() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+sensitive_files = ['\.env\b']
+
+[git]
+block_destructive = false
+"#,
+    );
+
+    for cmd in [
+        "git branch -D feature",
+        "git reset --hard",
+        "git push -f origin main",
+        "git clean -fd",
+    ] {
+        assert_bash_allowed(&config, cmd);
+    }
+    assert_bash_blocked(&config, "git add .env", "BLOCKED");
+}
+
+#[test]
+fn test_config_file_block_add_sensitive_off() {
+    let dir = TempDir::new().unwrap();
+    let config = create_config(
+        &dir,
+        r#"
+sensitive_files = ['\.env\b']
+
+[git]
+block_add_sensitive = false
+"#,
+    );
+
+    assert_bash_allowed(&config, "git add .env");
+}
+
+#[test]
+fn test_config_file_rm_block_outside_cwd_off() {
+    let dir = TempDir::new().unwrap();
+    let on = create_config(&dir, r#"sensitive_files = []"#);
+    let off_dir = TempDir::new().unwrap();
+    let off = create_config(
+        &off_dir,
+        r#"
+[rm]
+block_outside_cwd = false
+"#,
+    );
+
+    let input = r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf /home/user/other/build"},"cwd":"/home/user/project"}"#;
+
+    cmd_with_config(&on)
+        .write_stdin(input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("BLOCKED"));
+    cmd_with_config(&off).write_stdin(input).assert().success();
+}
