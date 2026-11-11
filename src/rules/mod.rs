@@ -8,6 +8,7 @@ mod direnv;
 mod env;
 mod find;
 mod gcloud;
+mod gh;
 mod git;
 mod heroku;
 mod infisical;
@@ -29,6 +30,7 @@ pub use direnv::analyze_direnv_raw;
 pub use env::analyze_env_raw;
 pub use find::analyze_find;
 pub use gcloud::analyze_gcloud;
+pub use gh::analyze_gh;
 pub use git::analyze_git;
 pub use heroku::analyze_heroku;
 pub use infisical::analyze_infisical_raw;
@@ -57,12 +59,13 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
 
     // mise must run before env: both block `mise env`, and we want the more
     // specific tool-name reason rather than the generic env one.
-    let checks: [&dyn Fn() -> Decision; 16] = [
+    let checks: [&dyn Fn() -> Decision; 17] = [
         &|| analyze_kubectl(&sites),
         &|| analyze_gcloud(&sites),
         &|| analyze_aws(&sites),
         &|| analyze_azure(&sites),
         &|| analyze_heroku(&sites),
+        &|| analyze_gh(&sites),
         &|| analyze_direnv_raw(&sites, config),
         &|| analyze_mise_raw(&sites, config),
         &|| analyze_shadowenv_raw(&sites, config),

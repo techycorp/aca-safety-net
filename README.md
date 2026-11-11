@@ -15,7 +15,7 @@ A fast, Rust-based security hook for autonomous coding agents. Blocks access to 
 - **Zero Config**: Works out of the box with pretty good defaults—no configuration required
 - **Fast**: <5ms execution (vs 50-100ms for Python alternatives)
 - **Secrets Protection**: Blocks read access to `.env`, credentials, SSH keys, API tokens
-- **Cloud CLI Protection**: Blocks secret-exposing commands from Heroku, AWS, and GCloud CLIs
+- **Cloud CLI Protection**: Blocks secret-exposing commands from Heroku, AWS, and GCloud CLIs, and token-printing GitHub CLI commands
 - **Destructive Command Detection**: Blocks `rm -rf` outside working directory, dangerous git operations
 - **Shell-Aware**: Parses command chains (`&&`, `||`, `|`, `;`), strips wrappers (`sudo`, `env`, `bash -c`)
 - **Configurable**: Optional TOML config to extend defaults with custom rules
@@ -250,6 +250,11 @@ These are blocked in **every** context, including when the output is passed as a
 - `heroku auth:token` (the long-lived API token, unlike the short-lived cloud tokens below)
 - `heroku config` / `heroku config:get` (exposes env vars)
 - `heroku pg:credentials` / `heroku redis:credentials` (database credentials)
+
+#### GitHub CLI
+- `gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential` (the long-lived login token; gh reads it itself, so nothing needs it printed)
+- `gh alias set` with an `auth` expansion (would hide the above behind a new name)
+- `gh secret` stays allowed: GitHub returns secret names, never values
 
 #### AWS
 - `aws secretsmanager get-secret-value` (retrieves secrets)
