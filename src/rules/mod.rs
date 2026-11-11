@@ -14,6 +14,7 @@ mod infisical;
 mod kubectl;
 mod mise;
 mod pipenv;
+mod ps;
 mod rm;
 mod sensitive_files;
 mod shadowenv;
@@ -34,6 +35,7 @@ pub use infisical::analyze_infisical_raw;
 pub use kubectl::analyze_kubectl;
 pub use mise::analyze_mise_raw;
 pub use pipenv::analyze_pipenv;
+pub use ps::analyze_ps;
 pub use rm::analyze_rm;
 pub use sensitive_files::{check_git_add_sensitive, check_sensitive_path, check_strict_mentions};
 pub use shadowenv::analyze_shadowenv_raw;
@@ -55,7 +57,7 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
 
     // mise must run before env: both block `mise env`, and we want the more
     // specific tool-name reason rather than the generic env one.
-    let checks: [&dyn Fn() -> Decision; 15] = [
+    let checks: [&dyn Fn() -> Decision; 16] = [
         &|| analyze_kubectl(&sites),
         &|| analyze_gcloud(&sites),
         &|| analyze_aws(&sites),
@@ -71,6 +73,7 @@ pub fn analyze_command(command: &str, config: &CompiledConfig, cwd: Option<&str>
         &|| analyze_git(&sites, config),
         &|| analyze_rm(&sites, config, cwd),
         &|| analyze_find(&sites),
+        &|| analyze_ps(&sites),
     ];
     for check in checks {
         let decision = check();
