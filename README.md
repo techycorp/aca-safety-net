@@ -71,7 +71,7 @@ The following protections are always active:
   - `credentials`: `credentials`, `secrets`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`
   - `keys`: `.pem`, `.key`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` (case-insensitive)
   - `ssh`: everything under `.ssh/` except `*.pub`, `config`, `known_hosts`, `authorized_keys` (readable, never writable)
-  - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`
+  - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`, `.docker/config.json`, `containers/auth.json` (registry logins)
   - `history`: `_history`, `.bash_history`, `.zsh_history`
 - **Env-loading tools** (toggleable): `direnv`, `shadowenv`, and the secret-exposing `mise` subcommands (see [mise](#mise))
 - **Always locked**: `infisical`, `env`, `printenv`, `ps` showing environments (`-E`, dash-less `e`)

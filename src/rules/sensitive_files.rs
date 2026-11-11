@@ -114,6 +114,35 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_auth_files_blocked_by_default() {
+        let config = Config::default().compile().unwrap();
+        for path in [
+            "/Users/someone/.docker/config.json",
+            "~/.docker/config.json",
+            "/home/someone/.config/containers/auth.json",
+            "/run/user/501/containers/auth.json",
+        ] {
+            let d = check_sensitive_path(path, &config);
+            assert!(d.is_blocked(), "{path}");
+            assert!(d.block_info().unwrap().rule.ends_with(".cloud"), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_registry_auth_neighbours_allowed() {
+        let config = Config::default().compile().unwrap();
+        for path in [
+            "docker-compose.yml",
+            "Dockerfile",
+            "/Users/someone/.docker/contexts/meta/x/meta.json",
+            "config.json",
+            "/etc/containers/registries.conf",
+        ] {
+            assert!(!check_sensitive_path(path, &config).is_blocked(), "{path}");
+        }
+    }
+
+    #[test]
     fn test_sensitive_env() {
         let config = test_config();
         let decision = check_sensitive_path(".env", &config);

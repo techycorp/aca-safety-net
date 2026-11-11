@@ -112,6 +112,9 @@ pub const SENSITIVE_GROUPS: &[(&str, &[&str])] = &[
             r"\.aws/credentials",
             r"\.config/gcloud/",
             r"\.config/gh/hosts\.yml",
+            // Registry logins: base64 `user:password` when no credsStore is set.
+            r"\.docker/config\.json",
+            r"containers/auth\.json",
         ],
     ),
     (
