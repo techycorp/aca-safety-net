@@ -112,6 +112,9 @@ pub const SENSITIVE_GROUPS: &[(&str, &[&str])] = &[
             r"\.aws/credentials",
             r"\.config/gcloud/",
             r"\.config/gh/hosts\.yml",
+            // Registry logins: base64 `user:password` when no credsStore is set.
+            r"\.docker/config\.json",
+            r"containers/auth\.json",
         ],
     ),
     (
@@ -204,7 +207,7 @@ const DEFAULT_DENY_RULES: &[(&str, &str, &str)] = &[
     ("Bash", r"^\s*declare\s+-x", "Exposes exported variables"),
     ("Bash", r"^\s*export\s*$", "Exposes exported variables"),
     ("Bash", r"/proc/.*/environ", "Exposes process environment"),
-    ("Bash", r"\bps\b.*(-E|auxe)", "Exposes process environment"),
+    // `ps -E` / `ps eww` are handled by the ps analyzer (src/rules/ps.rs).
     // History exposure
     ("Bash", r"^\s*history\b", "Exposes command history"),
     // Self-protection: agents must not rewrite the hook's own config

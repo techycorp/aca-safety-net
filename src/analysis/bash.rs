@@ -196,6 +196,27 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_auth_read_blocked_by_default() {
+        let config = Config::default().compile().unwrap();
+        for command in [
+            "cat ~/.docker/config.json",
+            "grep auth ~/.docker/config.json",
+            "head -20 /Users/someone/.docker/config.json",
+            "cat ~/.config/containers/auth.json",
+        ] {
+            let input = BashInput {
+                command: command.to_string(),
+                timeout: None,
+                description: None,
+            };
+            assert!(
+                analyze_bash(&input, &config, None).is_blocked(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
     fn test_cat_normal_file() {
         let config = test_config();
         let input = BashInput {

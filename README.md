@@ -15,7 +15,7 @@ A fast, Rust-based security hook for autonomous coding agents. Blocks access to 
 - **Zero Config**: Works out of the box with pretty good defaults—no configuration required
 - **Fast**: <5ms execution (vs 50-100ms for Python alternatives)
 - **Secrets Protection**: Blocks read access to `.env`, credentials, SSH keys, API tokens
-- **Cloud CLI Protection**: Blocks secret-exposing commands from Heroku, AWS, and GCloud CLIs
+- **Cloud CLI Protection**: Blocks secret-exposing commands from Heroku, AWS, and GCloud CLIs, and token-printing GitHub CLI commands
 - **Destructive Command Detection**: Blocks `rm -rf` outside working directory, dangerous git operations
 - **Shell-Aware**: Parses command chains (`&&`, `||`, `|`, `;`), strips wrappers (`sudo`, `env`, `bash -c`)
 - **Configurable**: Optional TOML config to extend defaults with custom rules
@@ -71,12 +71,12 @@ The following protections are always active:
   - `credentials`: `credentials`, `secrets`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`
   - `keys`: `.pem`, `.key`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` (case-insensitive)
   - `ssh`: everything under `.ssh/` except `*.pub`, `config`, `known_hosts`, `authorized_keys` (readable, never writable)
-  - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`
+  - `cloud`: `.kube/config`, `kubeconfig`, `.aws/credentials`, `.config/gcloud/`, `.config/gh/hosts.yml`, `.docker/config.json`, `containers/auth.json` (registry logins)
   - `history`: `_history`, `.bash_history`, `.zsh_history`
 - **Env-loading tools** (toggleable): `direnv`, `shadowenv`, and the secret-exposing `mise` subcommands (see [mise](#mise))
-- **Always locked**: `infisical`, `env`, `printenv`
+- **Always locked**: `infisical`, `env`, `printenv`, `ps` showing environments (`-E`, dash-less `e`)
 - **Read commands**: `cat`, `head`, `tail`, `less`, `more`, `grep`, `rg`, `ag`, `sed`, `awk`, `strings`, `xxd`, `hexdump`, `bat`, `view`
-- **Deny rules**: `set`, `declare -x`, `export`, `history`, `/proc/*/environ`, `ps -E`/`ps auxe`, docker/podman env exposure and inspect, agent writes to the hook's own config files
+- **Deny rules**: `set`, `declare -x`, `export`, `history`, `/proc/*/environ`, docker/podman env exposure and inspect, agent writes to the hook's own config files
 - **Dependency protection**: Enabled for all standard package manifests
 
 ### Optional Config Files
@@ -209,7 +209,10 @@ Side effects of failing closed: an assignment whose value is the tool name (`X=m
 - `printenv`, `set`, `export`, `declare -x`
 - `history` (exposes command history which may contain secrets)
 - `/proc/*/environ`
-- `ps auxe`, `ps -E`
+- `ps` forms that print environments, wherever the shell would run `ps`: `-E` in a dashed
+  option group (`ps -E`, `ps -Eww -p 123`) and `e` in a dash-less one (`ps eww`, `ps axe`).
+  A process started under `infisical run` holds its secrets in its environment, and `ps`
+  prints it for any process you own. `ps -e`/`ps -ef` ("all processes") stay allowed.
 - `docker inspect`, `docker exec ... env`
 
 ### Destructive Git Operations
@@ -247,6 +250,11 @@ These are blocked in **every** context, including when the output is passed as a
 - `heroku auth:token` (the long-lived API token, unlike the short-lived cloud tokens below)
 - `heroku config` / `heroku config:get` (exposes env vars)
 - `heroku pg:credentials` / `heroku redis:credentials` (database credentials)
+
+#### GitHub CLI
+- `gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential` (the long-lived login token; gh reads it itself, so nothing needs it printed)
+- `gh alias set` with an `auth` expansion (would hide the above behind a new name)
+- `gh secret` stays allowed: GitHub returns secret names, never values
 
 #### AWS
 - `aws secretsmanager get-secret-value` (retrieves secrets)
