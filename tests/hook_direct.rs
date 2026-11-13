@@ -226,6 +226,15 @@ mod should_block {
     }
 
     #[test]
+    fn cat_env_on_second_line() {
+        let cfg = create_config();
+        cmd_with_config(&cfg)
+            .write_stdin(r#"{"tool_name":"Bash","tool_input":{"command":"echo hi\ncat .env"}}"#)
+            .assert()
+            .code(2);
+    }
+
+    #[test]
     fn cat_env_local() {
         let cfg = create_config();
         cmd_with_config(&cfg)

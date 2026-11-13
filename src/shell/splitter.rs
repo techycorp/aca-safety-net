@@ -113,7 +113,7 @@ pub fn split_commands(input: &str) -> Vec<CommandSegment> {
                     current.clear();
                 }
             }
-            ';' => {
+            ';' | '\n' => {
                 let trimmed = current.trim().to_string();
                 if !trimmed.is_empty() {
                     segments.push(CommandSegment {
@@ -144,6 +144,19 @@ pub fn split_commands(input: &str) -> Vec<CommandSegment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_newline_separates_commands() {
+        let segments = split_commands("echo hi\ncat .env");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[1].command, "cat .env");
+    }
+
+    #[test]
+    fn test_quoted_newline_stays_in_command() {
+        let segments = split_commands("echo 'a\nb'");
+        assert_eq!(segments.len(), 1);
+    }
 
     #[test]
     fn test_simple_command() {
