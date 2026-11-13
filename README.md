@@ -84,7 +84,7 @@ The following protections are always active:
 - **Sensitive files**, in toggleable groups:
   - `env_files`: `.env`, `.envrc`
   - `direnv`: `.direnv/`, `direnvrc`, `~/.config/direnv/`
-  - `mise`: `.mise*`, `mise.toml`, `~/.config/mise/`
+  - `mise`: `.mise*`, `mise.toml`, `mise.<name>.toml`, `.config/mise/`, `/etc/mise/` (config only; tools mise installs under `~/.local/share/mise/` stay readable)
   - `shadowenv`: `.shadowenv.d/`
   - `credentials`: `credentials`, `secrets`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`
   - `keys`: `.pem`, `.key`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` (case-insensitive)

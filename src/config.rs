@@ -89,7 +89,15 @@ pub struct Config {
 pub const SENSITIVE_GROUPS: &[(&str, &[&str])] = &[
     ("env_files", &[r"\.env\b", r"\.envrc\b"]),
     ("direnv", &[r"\.direnv\b", r"\bdirenvrc\b", r"\bdirenv/"]),
-    ("mise", &[r"\.mise\b", r"\bmise\.toml\b", r"\bmise/"]),
+    (
+        "mise",
+        &[
+            r"\.mise\b",
+            r"\bmise(\.[\w-]+)?\.toml\b",
+            r"\.config/mise/",
+            r"^/etc/mise/",
+        ],
+    ),
     ("shadowenv", &[r"\.shadowenv\.d\b"]),
     (
         "credentials",
