@@ -12,7 +12,8 @@ sensitive_files = []
 # Built-in sensitive file groups. All default to true.
 #   env_files   .env, .env.*, .envrc
 #   direnv      .direnv/, direnvrc, ~/.config/direnv/
-#   mise        .mise*, mise.toml, ~/.config/mise/
+#   mise        .mise*, mise.toml, mise.<name>.toml, .config/mise/,
+#               /etc/mise/ (config only; installed tools stay readable)
 #   shadowenv   .shadowenv.d/
 #   credentials credentials, secrets, .netrc, .npmrc, .pypirc, .git-credentials
 #   keys        .pem, .key, id_rsa, id_dsa, id_ecdsa, id_ed25519

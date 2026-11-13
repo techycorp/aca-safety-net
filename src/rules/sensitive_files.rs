@@ -365,6 +365,32 @@ mod tests {
     }
 
     #[test]
+    fn test_default_blocks_mise_local_and_env_toml_no_dot() {
+        let config = default_config();
+        assert!(check_sensitive_path("mise.local.toml", &config).is_blocked());
+        assert!(check_sensitive_path("mise.production.toml", &config).is_blocked());
+    }
+
+    #[test]
+    fn test_default_blocks_project_config_dir_and_system_mise_config() {
+        let config = default_config();
+        assert!(check_sensitive_path("/repo/.config/mise/config.toml", &config).is_blocked());
+        assert!(check_sensitive_path("/etc/mise/config.toml", &config).is_blocked());
+    }
+
+    #[test]
+    fn test_default_does_not_block_mise_installed_tools() {
+        let config = default_config();
+        for path in [
+            "/home/u/.local/share/mise/installs/node/26.13.0/lib/node_modules/x/index.js",
+            "/home/u/.local/share/mise/installs/python/3.13/lib/python3.13/os.py",
+            "/home/u/.local/share/mise/shims/node",
+        ] {
+            assert!(!check_sensitive_path(path, &config).is_blocked(), "{path}");
+        }
+    }
+
+    #[test]
     fn test_default_blocks_global_direnvrc() {
         assert!(
             check_sensitive_path("/home/u/.config/direnv/direnvrc", &default_config()).is_blocked()
@@ -388,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_default_does_not_block_promise_dir() {
-        // Negative: word boundary on `\bmise/` shouldn't match `promise/foo`.
+        // Negative: only mise's config locations are sensitive, not any `mise/`.
         assert!(!check_sensitive_path("promise/foo.txt", &default_config()).is_blocked());
     }
 

@@ -1,0 +1,50 @@
+# Files matching these globs are fakes and must be listed below.
+fake_globs = ["tests/omp.rs"]
+
+[[fake]]
+path = "tests/omp.rs"
+vendor = "oh-my-pi"
+
+[[fake.claim]]
+behaviour = "a tool_call hook event carries the tool name as toolName and its arguments as input, and the hook context carries the session cwd"
+verified_by = "tests/vendor/omp.test.ts::omp must pass the tool name, input and session cwd to tool_call hooks"
+
+[[fake.claim]]
+behaviour = "bash takes command and an optional cwd; read takes path; write takes path and optional content; grep takes pattern and optional path; glob takes optional path"
+verified_by = "tests/vendor/omp.test.ts::omp tools must name their inputs command, cwd, path, content and pattern"
+
+[[fake.claim]]
+behaviour = "eval takes language py or js and code"
+verified_by = "tests/vendor/omp.test.ts::omp eval must take language py or js and code"
+
+[[fake.claim]]
+behaviour = "edit events carry the target as path, or the hashline patch targets as paths"
+verified_by = "tests/vendor/omp.test.ts::omp edit events must carry patch targets as paths"
+
+[[fake.claim]]
+behaviour = "a Python cell runs !cmd and var = !cmd lines as shell, %magic lines through omp's magic of that name, and a %%magic cell through the cell magic of that name"
+verified_by = "tests/vendor/omp.test.ts::omp python cells must run !cmd as shell and %name as the omp magic"
+
+[[fake.claim]]
+behaviour = "omp's magics are exactly the set src/omp.rs handles: line env, set_env, load, run, cd, pwd, ls, pip, time, timeit, who, whos, reset; cell bash, capture, timeit, writefile"
+verified_by = "tests/vendor/omp.test.ts::omp must define exactly the magics the hook translates"
+
+[[fake.claim]]
+behaviour = "%env with no arguments returns every environment variable, and %env NAME returns that variable"
+verified_by = "tests/vendor/omp.test.ts::omp %env must return environment variables"
+
+[[fake.claim]]
+behaviour = "a hook that throws or returns { block: true, reason } stops the tool call and shows the reason to the model"
+verified_by = "tests/vendor/omp.test.ts::omp must stop a tool call when a hook blocks it or throws"
+
+[[fake.claim]]
+behaviour = "hook files in ~/.omp/agent/hooks/pre/ load in every session unless extensions are disabled"
+verified_by = "tests/vendor/omp.test.ts::omp must discover hook files in ~/.omp/agent/hooks/pre"
+
+[[fake.claim]]
+behaviour = "the package.json in omp's install directory holds the version omp reports"
+verified_by = "tests/vendor/omp.test.ts::omp must report the version in its package.json"
+
+[[fake.claim]]
+behaviour = "inside an omp session, Bun.main is omp's entry script in its install directory, so the hook finds the running version by walking up to its package.json"
+unverified = "needs a live omp session to observe Bun.main from inside omp; a wrong guess fails safe, since the hook then blocks every call as an unknown version"

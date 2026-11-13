@@ -1,12 +1,16 @@
-//! ACO Safety Net - Claude Code security hook entry point.
+//! ACO Safety Net - security hook entry point for Claude Code and oh-my-pi.
+//!
+//! `aca-safety-net` reads a Claude Code PreToolUse event on stdin.
+//! `aca-safety-net --agent omp` reads an omp tool call (`tool_name`,
+//! `tool_input`, `cwd`) sent by the omp hook shim, and blocks when it cannot
+//! parse one.
 
-use aca_safety_net::analysis::{
-    analyze_bash, analyze_edit, analyze_path_tool, analyze_read, analyze_write,
-};
+use aca_safety_net::analysis::{analyze, most_severe};
 use aca_safety_net::audit::AuditLogger;
 use aca_safety_net::config::Config;
 use aca_safety_net::decision::Decision;
 use aca_safety_net::input::HookInput;
+use aca_safety_net::omp;
 use aca_safety_net::output::format_response;
 
 use std::io::{self, Read, Write};
@@ -14,26 +18,24 @@ use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // Read JSON from stdin
+    let omp_mode = is_omp_mode(std::env::args().skip(1));
+
     let mut input_str = String::new();
     if io::stdin().read_to_string(&mut input_str).is_err() {
-        return ExitCode::SUCCESS; // Fail-open on read error
+        return unreadable(omp_mode, "could not read hook input");
     }
 
-    // Parse input
     let hook_input = match HookInput::parse(&input_str) {
         Ok(v) => v,
-        Err(_) => return ExitCode::SUCCESS, // Fail-open on parse error
+        Err(_) => return unreadable(omp_mode, "could not parse hook input"),
     };
 
-    // Load config
     let cwd = hook_input.cwd.as_deref().map(Path::new);
     let config = match Config::load(cwd) {
         Ok(c) => c,
         Err(_) => return ExitCode::SUCCESS, // Fail-open if no config
     };
 
-    // Compile config patterns
     let compiled = match config.compile() {
         Ok(c) => c,
         Err(e) => {
@@ -45,40 +47,16 @@ fn main() -> ExitCode {
         eprintln!("aca-safety-net config warning: {}", warning);
     }
 
-    // Analyze based on tool type
-    let decision = match hook_input.tool_name.as_str() {
-        "Bash" => {
-            if let Some(bash_input) = hook_input.as_bash() {
-                analyze_bash(&bash_input, &compiled, hook_input.cwd.as_deref())
-            } else {
-                Decision::allow()
-            }
-        }
-        "Read" => {
-            if let Some(read_input) = hook_input.as_read() {
-                analyze_read(&read_input, &compiled)
-            } else {
-                Decision::allow()
-            }
-        }
-        "Edit" => {
-            if let Some(edit_input) = hook_input.as_edit() {
-                analyze_edit(&edit_input, &compiled)
-            } else {
-                Decision::allow()
-            }
-        }
-        "Write" => {
-            if let Some(write_input) = hook_input.as_write() {
-                analyze_write(&write_input, &compiled)
-            } else {
-                Decision::allow()
-            }
-        }
-        other => analyze_path_tool(other, &hook_input.tool_paths(), &compiled),
+    let decision = if omp_mode {
+        most_severe(
+            omp::translate(&hook_input)
+                .iter()
+                .map(|call| analyze(call, &compiled)),
+        )
+    } else {
+        analyze(&hook_input, &compiled)
     };
 
-    // Audit logging (if enabled)
     if compiled.raw.audit.enabled
         && let Some(path) = &compiled.raw.audit.path
         && let Ok(mut logger) = AuditLogger::open(Path::new(path))
@@ -86,7 +64,6 @@ fn main() -> ExitCode {
         let _ = logger.log_decision(&hook_input, &decision);
     }
 
-    // Output result
     match &decision {
         Decision::Allow => ExitCode::SUCCESS,
         Decision::Block(_) => {
@@ -96,7 +73,6 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Decision::Ask(_) => {
-            // Ask decisions output JSON to stdout for Claude Code to parse
             if let Some(json) = format_response(&decision) {
                 let _ = io::stdout().write_all(json.as_bytes());
                 let _ = io::stdout().write_all(b"\n");
@@ -104,4 +80,22 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn is_omp_mode(mut args: impl Iterator<Item = String>) -> bool {
+    while let Some(arg) = args.next() {
+        if arg == "--agent=omp" || (arg == "--agent" && args.next().as_deref() == Some("omp")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Claude Code input that cannot be read is allowed; omp input is blocked.
+fn unreadable(omp_mode: bool, what: &str) -> ExitCode {
+    if omp_mode {
+        eprintln!("BLOCKED: aca-safety-net {}", what);
+        return ExitCode::from(2);
+    }
+    ExitCode::SUCCESS
 }
