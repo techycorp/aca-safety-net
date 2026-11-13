@@ -1,0 +1,30 @@
+# Files matching these globs are fakes and must be listed below.
+fake_globs = ["tests/omp.rs"]
+
+[[fake]]
+path = "tests/omp.rs"
+vendor = "oh-my-pi"
+
+[[fake.claim]]
+behaviour = "a tool_call hook event carries the tool name as toolName and its arguments as input, and the hook context carries the session cwd"
+unverified = "read from the omp 18.20.0 source (extensibility/hooks/types.ts); observing it needs a live omp session driven by a model"
+
+[[fake.claim]]
+behaviour = "bash takes command and an optional cwd; read takes path; write takes path and optional content; grep takes pattern and optional path; glob takes optional path"
+unverified = "read from the omp 18.20.0 tool schemas (tools/bash.ts, read.ts, write.ts, grep.ts, glob.ts); observing it needs a live omp session"
+
+[[fake.claim]]
+behaviour = "edit events carry the target as path, or the hashline patch targets as paths"
+unverified = "read from omp 18.20.0 normalizeToolEventInput (extensibility/tool-event-input.ts); observing it needs a live omp session"
+
+[[fake.claim]]
+behaviour = "eval takes language py or js and code; a Python cell runs !cmd and var = !cmd lines and %magic lines, and %%bash style cell bodies, as shell"
+unverified = "read from omp 18.20.0 tools/eval.ts and eval/py/runner.py; observing it needs a live omp session"
+
+[[fake.claim]]
+behaviour = "a hook that throws or returns { block: true, reason } stops the tool call and shows the reason to the model"
+unverified = "read from omp 18.20.0 extensibility/hooks/tool-wrapper.ts; observing it needs a live omp session"
+
+[[fake.claim]]
+behaviour = "hook files in ~/.omp/agent/hooks/pre/ load in every session unless extensions are disabled"
+unverified = "read from omp 18.20.0 examples/hooks/README.md and discovery/builtin.ts; observing it needs a live omp session"

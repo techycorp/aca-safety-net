@@ -56,6 +56,9 @@ install: release test
 	cp target/release/aca-safety-net ~/.local/bin/
 	mkdir -p ~/.config/aca-safety-net
 	@echo "Installed ~/.local/bin/aca-safety-net"
+	mkdir -p ~/.omp/agent/hooks/pre
+	cp omp/aca-safety-net.ts ~/.omp/agent/hooks/pre/
+	@echo "Installed ~/.omp/agent/hooks/pre/aca-safety-net.ts (oh-my-pi hook)"
 	@if [ -f ~/.config/aca-safety-net/config.toml ]; then \
 		echo "Kept existing ~/.config/aca-safety-net/config.toml (see config.toml for new options)"; \
 	else \
@@ -66,5 +69,6 @@ install: release test
 # Uninstall binary and config
 uninstall:
 	rm -f ~/.local/bin/aca-safety-net
-	@echo "Removed ~/.local/bin/aca-safety-net"
+	rm -f ~/.omp/agent/hooks/pre/aca-safety-net.ts
+	@echo "Removed ~/.local/bin/aca-safety-net and the oh-my-pi hook"
 	@echo "Config at ~/.config/aca-safety-net/config.toml was NOT removed (manual cleanup if needed)"

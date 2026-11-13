@@ -55,6 +55,24 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+### 3. oh-my-pi (omp)
+
+`just install` also copies `omp/aca-safety-net.ts` to `~/.omp/agent/hooks/pre/`, where omp loads it for every session. No omp configuration is needed.
+
+The hook sends each omp tool call to `aca-safety-net --agent omp`, which translates it to the Claude Code tool the same rules check:
+
+| omp tool | Checked as |
+|----------|------------|
+| `bash` | `Bash`, with the tool's own `cwd` |
+| `read`, `write` | `Read`, `Write` (`path` as `file_path`) |
+| `edit` | `Edit`, once per target path |
+| `grep`, `glob` | `Grep`, `Glob` |
+| `eval` (Python) | `Bash` running `python -c CODE`, plus each `!cmd`, `%magic` and `%%bash` cell body as a shell command |
+| `eval` (JavaScript) | `Bash` running `node -e CODE` |
+| any other tool | path checks on its `path`, `file_path` and `paths` fields |
+
+The hook fails closed: a missing binary, a crash, a timeout or unparseable input blocks the call. An ask decision opens omp's confirm dialog. omp's `--no-extensions` flag, or removing the hook file, turns the protection off.
+
 ## Configuration
 
 **No configuration required.** The hook includes hardcoded security defaults that protect against common threats out of the box.
@@ -477,6 +495,8 @@ For the tool rules (env-loading tools, cloud CLIs, git, rm, ...), these are out 
 - History re-execution (`!!`, `fc`)
 - Remote environment semantics: a command run over `ssh` or in a container is checked as if it ran locally
 - Commands run remotely by a tool's own subcommand, e.g. `heroku run printenv`
+
+Under omp, `eval` code is checked with the same text rules as `python -c` / `node -e`, so the limits above apply to it: code that reads environment variables or opens a sensitive file is not blocked unless it names a blocked tool or an SSH key path.
 
 This is static analysis only - it cannot execute commands to determine their actual behavior.
 
