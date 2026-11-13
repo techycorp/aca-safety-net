@@ -73,6 +73,8 @@ The hook sends each omp tool call to `aca-safety-net --agent omp`, which transla
 
 The hook fails closed: a missing binary, a crash, a timeout or unparseable input blocks the call. An ask decision opens omp's confirm dialog. omp's `--no-extensions` flag, or removing the hook file, turns the protection off.
 
+The translation above is checked against the real omp by vendor tests (`tests/vendor/omp.test.ts`, run with `just vendor-test`; they need `bun` and `python`). `just install` runs them and records the omp version they passed on in `~/.config/aca-safety-net/omp-verified.json`. After an omp update, the hook blocks every tool call until `just install` is run again, so a changed omp is never checked with a translation that no longer fits it.
+
 ## Configuration
 
 **No configuration required.** The hook includes hardcoded security defaults that protect against common threats out of the box.
