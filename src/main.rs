@@ -8,7 +8,7 @@
 use aca_safety_net::analysis::{analyze, most_severe};
 use aca_safety_net::audit::AuditLogger;
 use aca_safety_net::config::Config;
-use aca_safety_net::decision::Decision;
+use aca_safety_net::decision::{BlockInfo, Decision};
 use aca_safety_net::input::HookInput;
 use aca_safety_net::omp;
 use aca_safety_net::output::format_response;
@@ -48,11 +48,10 @@ fn main() -> ExitCode {
     }
 
     let decision = if omp_mode {
-        most_severe(
-            omp::translate(&hook_input)
-                .iter()
-                .map(|call| analyze(call, &compiled)),
-        )
+        match omp::translate(&hook_input) {
+            Ok(calls) => most_severe(calls.iter().map(|call| analyze(call, &compiled))),
+            Err(reason) => Decision::Block(BlockInfo::new("omp_format", reason)),
+        }
     } else {
         analyze(&hook_input, &compiled)
     };

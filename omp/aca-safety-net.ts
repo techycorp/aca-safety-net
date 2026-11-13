@@ -5,59 +5,14 @@
  * call; an ask decision opens a confirm dialog (blocked without a UI); any
  * other failure (binary missing, crash, timeout, other exit code) blocks.
  *
- * Every call is also blocked while the running omp differs from the version
- * the vendor tests last passed on, recorded by `just install`: the
- * translation of omp's tool calls is only known to hold for that version.
- *
  * Installed to ~/.omp/agent/hooks/pre/ by `just install`. Standalone: omp
  * loads it directly, so it has no dependencies beyond omp's types and Bun.
  */
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
-import * as fs from "node:fs";
-import * as path from "node:path";
 
 const BINARY = `${process.env.HOME}/.local/bin/aca-safety-net`;
-const VERIFIED_FILE = `${process.env.HOME}/.config/aca-safety-net/omp-verified.json`;
-const OMP_PACKAGE = "@oh-my-pi/pi-coding-agent";
 const TIMEOUT_MS = 10_000;
 const TAG = "[aca-safety-net]";
-
-type Verified = { readonly version: string; readonly repo: string };
-
-const readJson = (file: string): Record<string, unknown> | undefined => {
-	try {
-		return JSON.parse(fs.readFileSync(file, "utf8"));
-	} catch {
-		return undefined;
-	}
-};
-
-/** The version in the package.json of the omp install running this hook. */
-const runningOmpVersion = (): string | undefined => {
-	let dir = path.dirname(fs.realpathSync(Bun.main));
-	while (dir !== path.dirname(dir)) {
-		const manifest = readJson(path.join(dir, "package.json"));
-		if (manifest?.name === OMP_PACKAGE) return String(manifest.version);
-		dir = path.dirname(dir);
-	}
-	return undefined;
-};
-
-const readVerified = (): Verified | undefined => {
-	const v = readJson(VERIFIED_FILE);
-	return typeof v?.version === "string" ? { version: v.version, repo: String(v.repo ?? "aca-safety-net") } : undefined;
-};
-
-/** Why every call is blocked, or undefined when the running omp is the verified one. */
-const versionBlock = (running: string | undefined, verified: Verified | undefined): string | undefined => {
-	if (running !== undefined && running === verified?.version) return undefined;
-	const repo = verified?.repo ?? "the aca-safety-net repo";
-	return (
-		`${TAG} omp is ${running ?? "an unknown version"}, but aca-safety-net's checks last passed on ` +
-		`${verified?.version ?? "no version"}. Ask the user to run \`just install\` in ${repo}, ` +
-		"which re-runs the checks against this omp. Until then every tool call is blocked."
-	);
-};
 
 type Run = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 
@@ -108,8 +63,6 @@ const check = (event: unknown): Promise<Verdict> =>
 
 export default function (pi: HookAPI) {
 	pi.on("tool_call", async (event, ctx) => {
-		const outdated = versionBlock(runningOmpVersion(), readVerified());
-		if (outdated) return { block: true, reason: outdated };
 		const verdict = await check({ tool_name: event.toolName, tool_input: event.input, cwd: ctx.cwd });
 		switch (verdict.kind) {
 			case "allow":

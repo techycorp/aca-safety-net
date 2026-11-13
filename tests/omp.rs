@@ -163,6 +163,33 @@ fn unknown_tool_sensitive_path_blocked() {
 }
 
 #[test]
+fn known_tool_missing_its_field_blocked_with_reason() {
+    let cfg = config();
+    let event = json!({ "tool_name": "bash", "tool_input": { "cmd": "cat .env" }, "cwd": "/work" });
+    let output = cargo_bin_cmd!("aca-safety-net")
+        .env("ACO_SAFETY_NET_CONFIG", cfg.path())
+        .args(["--agent", "omp"])
+        .write_stdin(event.to_string())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("`bash` call has no `command` field"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn known_tools_missing_their_fields_blocked() {
+    assert_blocked("read", json!({ "file_path": "/work/a.txt" }));
+    assert_blocked("write", json!({ "file_path": "/work/a.txt" }));
+    assert_blocked("edit", json!({ "input": "x" }));
+    assert_blocked("eval", json!({ "language": "py", "source": "1" }));
+    assert_blocked("eval", json!({ "language": "rb", "code": "1" }));
+}
+
+#[test]
 fn unparseable_input_blocked_in_omp_mode() {
     let cfg = config();
     cargo_bin_cmd!("aca-safety-net")

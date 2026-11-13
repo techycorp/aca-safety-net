@@ -252,13 +252,3 @@ vendor("omp python eval", () => {
 		expect(out).toStrictEqual([true, true]);
 	});
 });
-
-vendor("omp version", () => {
-	// Claim:    the package.json in omp's install directory holds the version omp reports
-	// Fails if: omp's reported version came from elsewhere: the two would differ after an update
-	test("omp must report the version in its package.json", () => {
-		const manifest = JSON.parse(fs.readFileSync(path.join(PKG ?? "", "package.json"), "utf8"));
-		const proc = Bun.spawnSync(["omp", "--version"]);
-		expect(proc.stdout.toString()).toContain(manifest.version);
-	});
-});

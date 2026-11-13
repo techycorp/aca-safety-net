@@ -40,11 +40,3 @@ verified_by = "tests/vendor/omp.test.ts::omp must stop a tool call when a hook b
 [[fake.claim]]
 behaviour = "hook files in ~/.omp/agent/hooks/pre/ load in every session unless extensions are disabled"
 verified_by = "tests/vendor/omp.test.ts::omp must discover hook files in ~/.omp/agent/hooks/pre"
-
-[[fake.claim]]
-behaviour = "the package.json in omp's install directory holds the version omp reports"
-verified_by = "tests/vendor/omp.test.ts::omp must report the version in its package.json"
-
-[[fake.claim]]
-behaviour = "inside an omp session, Bun.main is omp's entry script in its install directory, so the hook finds the running version by walking up to its package.json"
-unverified = "needs a live omp session to observe Bun.main from inside omp; a wrong guess fails safe, since the hook then blocks every call as an unknown version"

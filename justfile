@@ -59,22 +59,6 @@ vendor-claims:
 vendor-test:
 	bun test tests/vendor
 
-# Run the omp vendor tests and record the omp version they passed on, which the omp hook requires
-omp-verify:
-	#!/usr/bin/env bash
-	set -euo pipefail
-	if ! command -v omp >/dev/null; then
-		rm -f ~/.config/aca-safety-net/omp-verified.json
-		echo "omp not installed: skipped the omp vendor tests and cleared the omp verification record"
-		exit 0
-	fi
-	just vendor-test
-	version="$(omp --version | tail -1 | sed 's|^omp/||' | tr -d '[:space:]')"
-	repo="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-	mkdir -p ~/.config/aca-safety-net
-	printf '{"version":"%s","repo":"%s"}\n' "$version" "$repo" > ~/.config/aca-safety-net/omp-verified.json
-	echo "omp $version passed the vendor tests; recorded in ~/.config/aca-safety-net/omp-verified.json"
-
 # Install binary and config to user directories
 install: release test
 	mkdir -p ~/.local/bin
@@ -84,7 +68,6 @@ install: release test
 	mkdir -p ~/.omp/agent/hooks/pre
 	cp omp/aca-safety-net.ts ~/.omp/agent/hooks/pre/
 	@echo "Installed ~/.omp/agent/hooks/pre/aca-safety-net.ts (oh-my-pi hook)"
-	just omp-verify
 	@if [ -f ~/.config/aca-safety-net/config.toml ]; then \
 		echo "Kept existing ~/.config/aca-safety-net/config.toml (see config.toml for new options)"; \
 	else \
@@ -95,6 +78,6 @@ install: release test
 # Uninstall binary and config
 uninstall:
 	rm -f ~/.local/bin/aca-safety-net
-	rm -f ~/.omp/agent/hooks/pre/aca-safety-net.ts ~/.config/aca-safety-net/omp-verified.json
+	rm -f ~/.omp/agent/hooks/pre/aca-safety-net.ts
 	@echo "Removed ~/.local/bin/aca-safety-net and the oh-my-pi hook"
 	@echo "Config at ~/.config/aca-safety-net/config.toml was NOT removed (manual cleanup if needed)"

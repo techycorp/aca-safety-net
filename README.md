@@ -71,9 +71,9 @@ The hook sends each omp tool call to `aca-safety-net --agent omp`, which transla
 | `eval` (JavaScript) | `Bash` running `node -e CODE` |
 | any other tool | path checks on its `path`, `file_path` and `paths` fields |
 
-The hook fails closed: a missing binary, a crash, a timeout or unparseable input blocks the call. An ask decision opens omp's confirm dialog. omp's `--no-extensions` flag, or removing the hook file, turns the protection off.
+The hook fails closed: a missing binary, a crash, a timeout or unparseable input blocks the call. So does a call to one of the tools above without the field the table relies on (`command`, `path`, `paths`, `code`), or an `eval` in a language other than `py` or `js`: omp's format changed, and the block says aca-safety-net needs an update. An ask decision opens omp's confirm dialog. omp's `--no-extensions` flag, or removing the hook file, turns the protection off.
 
-The translation above is checked against the real omp by vendor tests (`tests/vendor/omp.test.ts`, run with `just vendor-test`; they need `bun` and `python`). `just install` runs them and records the omp version they passed on in `~/.config/aca-safety-net/omp-verified.json`. After an omp update, the hook blocks every tool call until `just install` is run again, so a changed omp is never checked with a translation that no longer fits it.
+The translation above is checked against the real omp by vendor tests (`tests/vendor/omp.test.ts`, run with `just vendor-test`; they need `bun`, `python` and an npm install of omp, found through the `omp` on PATH or `OMP_PACKAGE_DIR`). They skip when omp is a standalone executable.
 
 ## Configuration
 

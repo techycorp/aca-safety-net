@@ -8,44 +8,61 @@
 use crate::input::HookInput;
 use serde_json::{Value, json};
 
-/// Claude Code tool calls that together cover one omp tool call.
-pub fn translate(input: &HookInput) -> Vec<HookInput> {
+/// Claude Code tool calls that together cover one omp tool call, or why the
+/// call can't be checked: a known tool without the fields omp is known to send.
+pub fn translate(input: &HookInput) -> Result<Vec<HookInput>, String> {
     let args = &input.tool_input;
     match input.tool_name.as_str() {
-        "bash" => str_field(args, "command")
-            .map(|command| bash(input, command, bash_cwd(input)))
-            .into_iter()
-            .collect(),
-        "read" => str_field(args, "path")
-            .map(|path| claude(input, "Read", json!({ "file_path": path })))
-            .into_iter()
-            .collect(),
-        "write" => str_field(args, "path")
-            .map(|path| {
-                let content = str_field(args, "content").unwrap_or_default();
-                claude(
-                    input,
-                    "Write",
-                    json!({ "file_path": path, "content": content }),
-                )
-            })
-            .into_iter()
-            .collect(),
-        "edit" => paths(args)
-            .into_iter()
-            .map(|path| {
-                claude(
-                    input,
-                    "Edit",
-                    json!({ "file_path": path, "old_string": "", "new_string": "" }),
-                )
-            })
-            .collect(),
-        "grep" => path_tool(input, "Grep"),
-        "glob" => path_tool(input, "Glob"),
+        "bash" => {
+            let command = required(input, "command")?;
+            Ok(vec![bash(input, command, bash_cwd(input))])
+        }
+        "read" => {
+            let path = required(input, "path")?;
+            Ok(vec![claude(input, "Read", json!({ "file_path": path }))])
+        }
+        "write" => {
+            let path = required(input, "path")?;
+            let content = str_field(args, "content").unwrap_or_default();
+            Ok(vec![claude(
+                input,
+                "Write",
+                json!({ "file_path": path, "content": content }),
+            )])
+        }
+        "edit" => {
+            let targets = paths(args);
+            if targets.is_empty() {
+                return Err(format_changed(input, "has no `path` or `paths` field"));
+            }
+            Ok(targets
+                .into_iter()
+                .map(|path| {
+                    claude(
+                        input,
+                        "Edit",
+                        json!({ "file_path": path, "old_string": "", "new_string": "" }),
+                    )
+                })
+                .collect())
+        }
+        "grep" => Ok(path_tool(input, "Grep")),
+        "glob" => Ok(path_tool(input, "Glob")),
         "eval" => eval(input),
-        _ => generic(input),
+        _ => Ok(generic(input)),
     }
+}
+
+fn required<'a>(input: &'a HookInput, field: &str) -> Result<&'a str, String> {
+    str_field(&input.tool_input, field)
+        .ok_or_else(|| format_changed(input, &format!("has no `{field}` field")))
+}
+
+fn format_changed(input: &HookInput, problem: &str) -> String {
+    format!(
+        "omp's `{}` call {problem}. omp's tool-call format may have changed; aca-safety-net needs an update to check it",
+        input.tool_name
+    )
 }
 
 fn claude(input: &HookInput, tool: &str, tool_input: Value) -> HookInput {
@@ -99,14 +116,24 @@ fn generic(input: &HookInput) -> Vec<HookInput> {
 /// An eval cell checked as the shell command that would run the same code
 /// (`python -c CODE` or `node -e CODE`), plus what each IPython shell escape
 /// and magic in a Python cell does.
-fn eval(input: &HookInput) -> Vec<HookInput> {
-    let Some(code) = str_field(&input.tool_input, "code") else {
-        return Vec::new();
-    };
+fn eval(input: &HookInput) -> Result<Vec<HookInput>, String> {
+    let code = required(input, "code")?;
     let cwd = input.cwd.clone();
-    if str_field(&input.tool_input, "language") == Some("js") {
-        return vec![bash(input, &format!("node -e {}", shell_quote(code)), cwd)];
+    match str_field(&input.tool_input, "language") {
+        Some("js") => Ok(vec![bash(
+            input,
+            &format!("node -e {}", shell_quote(code)),
+            cwd,
+        )]),
+        Some("py") | None => Ok(python_cell(input, code, cwd)),
+        Some(other) => Err(format_changed(
+            input,
+            &format!("has unknown language `{other}`"),
+        )),
     }
+}
+
+fn python_cell(input: &HookInput, code: &str, cwd: Option<String>) -> Vec<HookInput> {
     let mut calls = vec![bash(
         input,
         &format!("python -c {}", shell_quote(code)),
@@ -256,9 +283,17 @@ mod tests {
         }
     }
 
+    fn checked(input: &HookInput) -> Vec<HookInput> {
+        translate(input).unwrap()
+    }
+
+    fn refusal(tool: &str, tool_input: Value) -> String {
+        translate(&omp(tool, tool_input)).unwrap_err()
+    }
+
     #[test]
     fn test_bash_maps_command_and_relative_cwd() {
-        let calls = translate(&omp("bash", json!({ "command": "ls", "cwd": "sub" })));
+        let calls = checked(&omp("bash", json!({ "command": "ls", "cwd": "sub" })));
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].tool_name, "Bash");
         assert_eq!(calls[0].command(), Some("ls"));
@@ -267,30 +302,30 @@ mod tests {
 
     #[test]
     fn test_bash_absolute_cwd() {
-        let calls = translate(&omp("bash", json!({ "command": "ls", "cwd": "/tmp" })));
+        let calls = checked(&omp("bash", json!({ "command": "ls", "cwd": "/tmp" })));
         assert_eq!(calls[0].cwd.as_deref(), Some("/tmp"));
     }
 
     #[test]
     fn test_read_write_map_path_to_file_path() {
-        let read = translate(&omp("read", json!({ "path": "a.txt" })));
+        let read = checked(&omp("read", json!({ "path": "a.txt" })));
         assert_eq!(read[0].tool_name, "Read");
         assert_eq!(read[0].file_path(), Some("a.txt"));
 
-        let write = translate(&omp("write", json!({ "path": "b.txt", "content": "x" })));
+        let write = checked(&omp("write", json!({ "path": "b.txt", "content": "x" })));
         assert_eq!(write[0].tool_name, "Write");
         assert_eq!(write[0].as_write().unwrap().content, "x");
     }
 
     #[test]
     fn test_write_without_content() {
-        let write = translate(&omp("write", json!({ "path": "b.txt" })));
+        let write = checked(&omp("write", json!({ "path": "b.txt" })));
         assert_eq!(write[0].as_write().unwrap().content, "");
     }
 
     #[test]
     fn test_edit_one_call_per_path() {
-        let calls = translate(&omp("edit", json!({ "input": "...", "paths": ["a", "b"] })));
+        let calls = checked(&omp("edit", json!({ "input": "...", "paths": ["a", "b"] })));
         let targets: Vec<_> = calls.iter().filter_map(|c| c.file_path()).collect();
         assert_eq!(targets, vec!["a", "b"]);
         assert!(calls.iter().all(|c| c.as_edit().is_some()));
@@ -298,31 +333,31 @@ mod tests {
 
     #[test]
     fn test_edit_single_path() {
-        let calls = translate(&omp("edit", json!({ "path": "a" })));
+        let calls = checked(&omp("edit", json!({ "path": "a" })));
         assert_eq!(calls[0].file_path(), Some("a"));
     }
 
     #[test]
     fn test_grep_and_glob_map_to_path_tools() {
-        let grep = translate(&omp("grep", json!({ "pattern": "x", "path": "src" })));
+        let grep = checked(&omp("grep", json!({ "pattern": "x", "path": "src" })));
         assert_eq!(grep[0].tool_name, "Grep");
         assert_eq!(grep[0].tool_paths(), vec!["src"]);
 
-        let glob = translate(&omp("glob", json!({ "path": "**/*.rs" })));
+        let glob = checked(&omp("glob", json!({ "path": "**/*.rs" })));
         assert_eq!(glob[0].tool_name, "Glob");
         assert_eq!(glob[0].tool_paths(), vec!["**/*.rs"]);
     }
 
     #[test]
     fn test_generic_tool_checks_each_listed_path() {
-        let calls = translate(&omp("ast_edit", json!({ "paths": ["a", "b"] })));
+        let calls = checked(&omp("ast_edit", json!({ "paths": ["a", "b"] })));
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[2].tool_paths(), vec!["b"]);
     }
 
     #[test]
     fn test_eval_python_as_python_c() {
-        let calls = translate(&omp(
+        let calls = checked(&omp(
             "eval",
             json!({ "language": "py", "code": "print('hi')" }),
         ));
@@ -332,13 +367,81 @@ mod tests {
 
     #[test]
     fn test_eval_js_as_node_e() {
-        let calls = translate(&omp("eval", json!({ "language": "js", "code": "1+1" })));
+        let calls = checked(&omp("eval", json!({ "language": "js", "code": "1+1" })));
         assert_eq!(calls[0].command(), Some("node -e '1+1'"));
     }
 
     #[test]
-    fn test_eval_without_code() {
-        assert!(translate(&omp("eval", json!({ "language": "py" }))).is_empty());
+    fn test_eval_without_language_is_python() {
+        let calls = checked(&omp("eval", json!({ "code": "1" })));
+        assert_eq!(calls[0].command(), Some("python -c '1'"));
+    }
+
+    #[test]
+    fn test_known_tool_missing_its_field_is_refused() {
+        let cases = [
+            (
+                "bash",
+                json!({ "cmd": "ls" }),
+                "`bash` call has no `command` field",
+            ),
+            (
+                "read",
+                json!({ "file_path": "a" }),
+                "`read` call has no `path` field",
+            ),
+            (
+                "write",
+                json!({ "content": "x" }),
+                "`write` call has no `path` field",
+            ),
+            (
+                "edit",
+                json!({ "input": "x" }),
+                "`edit` call has no `path` or `paths` field",
+            ),
+            (
+                "eval",
+                json!({ "language": "py" }),
+                "`eval` call has no `code` field",
+            ),
+        ];
+        for (tool, input, expected) in cases {
+            let reason = refusal(tool, input);
+            assert!(reason.contains(expected), "{reason}");
+            assert!(
+                reason.contains("aca-safety-net needs an update"),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_field_of_wrong_type_is_refused() {
+        assert!(refusal("bash", json!({ "command": ["ls"] })).contains("no `command` field"));
+    }
+
+    #[test]
+    fn test_eval_unknown_language_is_refused() {
+        assert!(
+            refusal("eval", json!({ "language": "rb", "code": "1" }))
+                .contains("unknown language `rb`")
+        );
+    }
+
+    #[test]
+    fn test_optional_fields_may_be_missing() {
+        assert_eq!(
+            checked(&omp("grep", json!({ "pattern": "x" })))[0].tool_paths(),
+            vec!["."]
+        );
+        assert_eq!(checked(&omp("glob", json!({})))[0].tool_paths(), vec!["."]);
+        assert_eq!(
+            checked(&omp("bash", json!({ "command": "ls" })))[0]
+                .cwd
+                .as_deref(),
+            Some("/work")
+        );
     }
 
     fn shell(c: &str) -> Effect {
