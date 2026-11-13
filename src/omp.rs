@@ -97,8 +97,8 @@ fn generic(input: &HookInput) -> Vec<HookInput> {
 }
 
 /// An eval cell checked as the shell command that would run the same code
-/// (`python -c CODE` or `node -e CODE`), plus each IPython shell escape and
-/// magic in a Python cell checked as a shell command of its own.
+/// (`python -c CODE` or `node -e CODE`), plus what each IPython shell escape
+/// and magic in a Python cell does.
 fn eval(input: &HookInput) -> Vec<HookInput> {
     let Some(code) = str_field(&input.tool_input, "code") else {
         return Vec::new();
@@ -113,30 +113,42 @@ fn eval(input: &HookInput) -> Vec<HookInput> {
         cwd.clone(),
     )];
     calls.extend(
-        ipython_shell_commands(code)
-            .iter()
-            .map(|command| bash(input, command, cwd.clone())),
+        ipython_effects(code)
+            .into_iter()
+            .map(|effect| match effect {
+                Effect::Shell(command) => bash(input, &command, cwd.clone()),
+                Effect::WriteFile { path, content } => claude(
+                    input,
+                    "Write",
+                    json!({ "file_path": path, "content": content }),
+                ),
+            }),
     );
     calls
 }
 
-/// Cell magics whose body is a shell script.
-const SHELL_CELL_MAGICS: &[&str] = &["bash", "sh", "zsh", "script", "system", "sx"];
+/// What an IPython escape or magic line does, as something the analyzers check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    /// Runs, or reads like, this shell command.
+    Shell(String),
+    /// Writes `content` to `path`.
+    WriteFile { path: String, content: String },
+}
 
-/// Shell commands an IPython cell runs: `!cmd` and `var = !cmd` lines,
-/// `%magic args` lines as the command `magic args`, and a cell magic's header
-/// the same way, with the body of a shell cell magic as a script.
-pub fn ipython_shell_commands(code: &str) -> Vec<String> {
-    let mut commands = Vec::new();
+/// Cell magics whose body omp runs as a shell script.
+const SHELL_CELL_MAGICS: &[&str] = &["bash", "sh", "script"];
+
+/// The effects of the `!cmd`, `var = !cmd`, `%magic` and `%%magic` lines in a
+/// Python cell. A cell magic consumes the rest of the cell.
+pub fn ipython_effects(code: &str) -> Vec<Effect> {
+    let mut effects = Vec::new();
     let lines: Vec<&str> = code.lines().collect();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
         if let Some(cell) = trimmed.strip_prefix("%%") {
-            commands.push(cell.trim().to_string());
-            let name = cell.split_whitespace().next().unwrap_or_default();
-            if SHELL_CELL_MAGICS.contains(&name) {
-                commands.push(lines[i + 1..].join("\n"));
-            }
+            let (name, args) = split_head(cell);
+            effects.extend(cell_magic_effect(name, args, lines[i + 1..].join("\n")));
             break;
         }
         let escaped = match trimmed.split_once('=') {
@@ -144,13 +156,56 @@ pub fn ipython_shell_commands(code: &str) -> Vec<String> {
             _ => trimmed,
         };
         if let Some(shell) = escaped.strip_prefix('!') {
-            commands.push(shell.trim_start_matches('!').trim().to_string());
+            effects.push(Effect::Shell(
+                shell.trim_start_matches('!').trim().to_string(),
+            ));
         } else if let Some(magic) = escaped.strip_prefix('%') {
-            commands.push(magic.trim().to_string());
+            let (name, args) = split_head(magic);
+            effects.extend(line_magic_effect(name, args));
         }
     }
-    commands.retain(|c| !c.is_empty());
-    commands
+    effects.retain(|e| !matches!(e, Effect::Shell(c) if c.is_empty()));
+    effects
+}
+
+fn split_head(text: &str) -> (&str, &str) {
+    let text = text.trim();
+    match text.split_once(char::is_whitespace) {
+        Some((name, args)) => (name, args.trim()),
+        None => (text, ""),
+    }
+}
+
+/// omp's line magics: `%env` returns all variables or the named one, `%load`
+/// reads and runs a file, `%run` runs a Python file, `%set_env` and
+/// `%env K=V` only set a variable. Others are checked as the command they name.
+fn line_magic_effect(name: &str, args: &str) -> Option<Effect> {
+    let command = match name {
+        "env" if args.contains('=') => return None,
+        "set_env" => return None,
+        "env" => format!("printenv {args}"),
+        "load" => format!("cat {args}"),
+        "run" => format!("python {args}"),
+        _ => format!("{name} {args}"),
+    };
+    Some(Effect::Shell(command.trim().to_string()))
+}
+
+/// omp's cell magics: `%%bash` runs the body as a shell script and
+/// `%%writefile PATH` writes the body to PATH. The other cell magics run the
+/// body as Python, which the whole-cell check covers.
+fn cell_magic_effect(name: &str, args: &str, body: String) -> Option<Effect> {
+    if SHELL_CELL_MAGICS.contains(&name) {
+        return Some(Effect::Shell(body));
+    }
+    if name == "writefile" {
+        let path = args.split_whitespace().last().unwrap_or_default();
+        return Some(Effect::WriteFile {
+            path: path.to_string(),
+            content: body,
+        });
+    }
+    None
 }
 
 fn is_identifier(s: &str) -> bool {
@@ -286,35 +341,73 @@ mod tests {
         assert!(translate(&omp("eval", json!({ "language": "py" }))).is_empty());
     }
 
+    fn shell(c: &str) -> Effect {
+        Effect::Shell(c.to_string())
+    }
+
     #[test]
-    fn test_ipython_shell_escapes_and_magics() {
-        let code = "x = 1\n!ls -la\nout = !whoami\n!!date\n%cat notes.txt\ny = %pwd";
+    fn test_ipython_shell_escapes() {
+        let code = "x = 1\n!ls -la\nout = !whoami\n!!date";
         assert_eq!(
-            ipython_shell_commands(code),
-            vec!["ls -la", "whoami", "date", "cat notes.txt", "pwd"]
+            ipython_effects(code),
+            vec![shell("ls -la"), shell("whoami"), shell("date")]
         );
     }
 
     #[test]
-    fn test_ipython_shell_cell_magic_body() {
-        let code = "%%bash\ncat secrets.txt\necho done";
+    fn test_ipython_env_magic_reads_as_printenv() {
+        assert_eq!(ipython_effects("%env"), vec![shell("printenv")]);
         assert_eq!(
-            ipython_shell_commands(code),
-            vec!["bash", "cat secrets.txt\necho done"]
+            ipython_effects("v = %env HOME"),
+            vec![shell("printenv HOME")]
         );
     }
 
     #[test]
-    fn test_ipython_other_cell_magic_header_only() {
+    fn test_ipython_env_assignment_is_not_a_read() {
+        assert!(ipython_effects("%env A=1\n%set_env A 1").is_empty());
+    }
+
+    #[test]
+    fn test_ipython_load_and_run_read_their_file() {
         assert_eq!(
-            ipython_shell_commands("%%writefile out.txt\nhello"),
-            vec!["writefile out.txt"]
+            ipython_effects("%load a.py\n%run b.py x"),
+            vec![shell("cat a.py"), shell("python b.py x")]
         );
     }
 
     #[test]
-    fn test_ipython_plain_python_has_no_commands() {
-        assert!(ipython_shell_commands("a = b % c\nif a != b: pass").is_empty());
+    fn test_ipython_other_line_magic_as_command() {
+        assert_eq!(ipython_effects("%ls -a"), vec![shell("ls -a")]);
+    }
+
+    #[test]
+    fn test_ipython_bash_cell_body_is_shell() {
+        assert_eq!(
+            ipython_effects("%%bash\ncat secrets.txt\necho done"),
+            vec![shell("cat secrets.txt\necho done")]
+        );
+    }
+
+    #[test]
+    fn test_ipython_writefile_cell_is_a_write() {
+        assert_eq!(
+            ipython_effects("%%writefile -a out.txt\nhello"),
+            vec![Effect::WriteFile {
+                path: "out.txt".to_string(),
+                content: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn test_ipython_python_cell_magic_has_no_effect() {
+        assert!(ipython_effects("%%capture c\nprint(1)").is_empty());
+    }
+
+    #[test]
+    fn test_ipython_plain_python_has_no_effects() {
+        assert!(ipython_effects("a = b % c\nif a != b: pass").is_empty());
     }
 
     #[test]

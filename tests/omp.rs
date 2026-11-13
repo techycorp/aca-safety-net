@@ -112,8 +112,27 @@ fn eval_ipython_shell_escape_blocked() {
 }
 
 #[test]
-fn eval_ipython_magic_blocked() {
-    assert_blocked("eval", json!({ "language": "py", "code": "%cat .env" }));
+fn eval_env_magic_blocked() {
+    assert_blocked("eval", json!({ "language": "py", "code": "%env" }));
+    assert_blocked("eval", json!({ "language": "py", "code": "v = %env HOME" }));
+}
+
+#[test]
+fn eval_load_and_run_of_sensitive_file_blocked() {
+    assert_blocked("eval", json!({ "language": "py", "code": "%load .env" }));
+}
+
+#[test]
+fn eval_writefile_to_sensitive_path_blocked() {
+    assert_blocked(
+        "eval",
+        json!({ "language": "py", "code": "%%writefile .env\nX=1" }),
+    );
+}
+
+#[test]
+fn eval_env_assignment_allowed() {
+    assert_allowed("eval", json!({ "language": "py", "code": "%env DEBUG=1" }));
 }
 
 #[test]
