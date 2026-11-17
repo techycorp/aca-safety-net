@@ -150,17 +150,17 @@ allow_subcommands = ["run"]   # allow these on top of the safe defaults
 - Explicit `[sensitive_groups]` / `[tools]` entries override the profile.
 - `allow_subcommands` matches the literal subcommand (`direnv allow`, `direnv "allow"`, also inside `$(...)` or `bash -c`). Flag-prefixed, variable, glob and command-word-substitution forms stay blocked. For mise, leading global flags (`-C dir`, `--cd=dir`, `-q`, ...) are skipped and aliases count as their full name (`r` is `run`).
 - `mise env` stays blocked even with mise disabled, because the `env` analyzer is always on.
-- `mise token` (prints your git provider token) and `mise mcp` (serves mise's env and config to a client) are always blocked; no profile or `[tools.mise]` setting allows them. So is a mise subcommand that can't be known before the command runs (`mise $SUB`, `mise $(...)`, an unknown global flag, `xargs mise`), since it could be one of those.
+- `mise token` (prints your git provider token), `mise mcp` (serves mise's env and config to a client) and `mise trust` (lets a config load its env, hooks and `exec` templates; the agent is told to ask you to run it) are always blocked; no profile or `[tools.mise]` setting allows them. So is a mise subcommand that can't be known before the command runs (`mise $SUB`, `mise $(...)`, an unknown global flag, `xargs mise`), since it could be one of those.
 
 ### mise
 
 mise is allowed except for subcommands that can expose secrets. Based on `mise --help` for mise 2026.10.3.
 
-- **Blocked:** `env`, `hook-env`, `set` (lists and reads values), `config` (`config get`), `exec`/`x`, `en`, `run`/`r`, `watch`, `tasks`, `token` (prints git provider tokens), `mcp` (serves env values), `ssh`, `bootstrap`, `deps`, `daemons`, `oci`, `tool-stub`, `test-tool`. Also `doctor`, `settings`, `generate`, `edit` and `dotfiles`, which may show config or file contents and aren't verified safe.
+- **Blocked:** `env`, `hook-env`, `set` (lists and reads values), `config` (`config get`), `exec`/`x`, `en`, `run`/`r`, `watch`, `tasks`, `token` (prints git provider tokens), `mcp` (serves env values), `trust` (trusting a config is your call; the agent is told to ask you), `ssh`, `bootstrap`, `deps`, `daemons`, `oci`, `tool-stub`, `test-tool`. Also `doctor`, `settings`, `generate`, `edit` and `dotfiles`, which may show config or file contents and aren't verified safe.
 - **Unknown subcommands are blocked**, because `mise <name>` runs the task of that name. A bare `mise`, or one whose subcommand can't be determined (`mise $X`), is blocked too.
-- **Allowed:** everything else, e.g. `install`, `use`, `ls`, `ls-remote`, `which`, `where`, `latest`, `outdated`, `upgrade`, `prune`, `plugins`, `trust`, `activate`, `shell`, `version`, `help`.
+- **Allowed:** everything else, e.g. `install`, `use`, `ls`, `ls-remote`, `which`, `where`, `latest`, `outdated`, `upgrade`, `prune`, `plugins`, `untrust`, `activate`, `shell`, `version`, `help`.
 - Reading mise config files stays blocked by the `mise` sensitive group.
-- Caveats: `install`/`use` run plugin code and `[hooks]` from config, `trust` lets a config run `{{exec(...)}}` templates, and `implode` uninstalls mise. None print secrets on their own.
+- Caveats: `install`/`use` run plugin code and `[hooks]` from already-trusted config, and `implode` uninstalls mise. None print secrets on their own.
 - Unknown group, tool or profile names produce a warning and leave protection on.
 - If your user config lists a built-in pattern in `sensitive_files` (older installs copied all defaults there), that copy keeps blocking after its group is disabled. A warning tells you which to remove.
 

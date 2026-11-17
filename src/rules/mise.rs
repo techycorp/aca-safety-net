@@ -5,7 +5,8 @@
 //! that environment, print tokens, or run commands or tasks with it loaded
 //! are blocked. Everything else (installing and listing tools, etc.) is
 //! allowed. Unknown subcommands are blocked because `mise <name>` runs the
-//! task of that name.
+//! task of that name. `trust` is blocked because trusting a config is the
+//! user's decision.
 //!
 //! The subcommand lists match `mise --help` for mise 2026.10.3.
 
@@ -52,7 +53,6 @@ const SAFE_SUBCOMMANDS: &[&str] = &[
     "sync",
     "tool",
     "tool-alias",
-    "trust",
     "uninstall",
     "unset",
     "untrust",
@@ -67,7 +67,7 @@ const SAFE_SUBCOMMANDS: &[&str] = &[
 /// Sensitive subcommands as written, for spotting `<unknown wrapper> mise <subcommand>`.
 const SUBCOMMANDS: &[&str] = &[
     "env", "e", "hook-env", "exec", "x", "en", "run", "r", "watch", "w", "tasks", "task", "t",
-    "set", "ev", "env-vars", "config", "cfg", "toml", "token", "mcp",
+    "set", "ev", "env-vars", "config", "cfg", "toml", "token", "mcp", "trust",
 ];
 
 /// Global flags that take a value.
@@ -201,7 +201,9 @@ pub(crate) fn is_mise_env(inv: &Invocation) -> bool {
 /// `enabled = false` and `allow_subcommands`. `token` prints the git
 /// provider token (e.g. GitHub), which isn't an env-file secret. `mcp` runs
 /// a server that hands mise's env and config to whoever talks to it.
-const ALWAYS_BLOCKED: &[&str] = &["token", "mcp"];
+/// `trust` lets a config load its env, hooks and `exec` templates; only the
+/// user may grant that.
+const ALWAYS_BLOCKED: &[&str] = &["token", "mcp", "trust"];
 
 fn allowed(subcommand: &Subcommand, config: &CompiledConfig) -> bool {
     match subcommand {
@@ -249,6 +251,10 @@ fn mise_subcommand_info(subcommand: Option<&str>) -> (&'static str, String) {
         "mcp" => (
             "mise.mcp",
             "mise mcp serves the environment, including secrets, to its client",
+        ),
+        "trust" => (
+            "mise.trust",
+            "mise trust lets a config load its env, hooks and exec templates; trusting a config is the user's decision. Ask the user to run `mise trust` themselves",
         ),
         "ssh" | "bootstrap" | "deps" | "daemons" | "oci" | "tool-stub" | "test-tool" => (
             "mise.exec",
@@ -342,7 +348,7 @@ mod tests {
             "mise plugins ls",
             "mise prune",
             "mise reshim",
-            "mise trust",
+            "mise untrust",
             "mise activate zsh",
             "mise shell node@20",
             "mise version",
@@ -385,6 +391,9 @@ mod tests {
             "mise cfg ls",
             "mise token github",
             "mise mcp",
+            "mise trust",
+            "mise trust ./mise.toml",
+            "mise trust --all",
             "mise ssh host",
             "mise bootstrap",
             "mise deps",
@@ -472,7 +481,7 @@ mod tests {
         assert!(!raw("mise run build", &secretless).is_blocked());
         for c in [
             cfg_tool(false, &[]),
-            cfg_tool(true, &["token", "mcp"]),
+            cfg_tool(true, &["token", "mcp", "trust"]),
             secretless,
         ] {
             for cmd in [
@@ -480,6 +489,9 @@ mod tests {
                 "mise -q token",
                 "echo $(mise token)",
                 "mise mcp",
+                "mise trust",
+                "mise -C /x trust",
+                "echo $(mise trust)",
             ] {
                 assert!(raw(cmd, &c).is_blocked(), "{cmd}");
             }
@@ -537,10 +549,26 @@ mod tests {
         assert_eq!(rule(raw("mise set", &cfg())), "mise.set");
         assert_eq!(rule(raw("mise token github", &cfg())), "mise.token");
         assert_eq!(rule(raw("mise mcp", &cfg())), "mise.mcp");
+        assert_eq!(rule(raw("mise trust", &cfg())), "mise.trust");
+        assert_eq!(
+            rule(raw("unknown-wrapper mise trust", &cfg())),
+            "mise.trust"
+        );
         assert_eq!(rule(raw("mise build", &cfg())), "mise.task");
         assert_eq!(rule(raw("mise", &cfg())), "mise.blocked");
         assert_eq!(rule(segment("mise exec -- cat .env")), "mise.exec");
         assert_eq!(rule(raw("unknown-wrapper mise env", &cfg())), "mise.env");
+    }
+
+    #[test]
+    fn test_trust_reason_tells_agent_to_ask_user() {
+        let d = raw("mise trust", &cfg());
+        assert!(
+            d.block_info()
+                .unwrap()
+                .reason
+                .contains("Ask the user to run `mise trust`")
+        );
     }
 
     #[test]
